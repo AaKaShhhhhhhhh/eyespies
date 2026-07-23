@@ -60,6 +60,8 @@ int request_buffers(int fd , int count) {
     return req.count;
 }
 
+void* buffer_addresses[4]; // Array to hold buffer addresses
+size_t buffer_sizes[4]; // Array to hold buffer sizes
 
 void map_buffers(int fd , int index) {
 
@@ -84,6 +86,8 @@ void map_buffers(int fd , int index) {
     // mapping the buffer to user space
     void *mapped_buffer = mmap(NULL, buffer_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset);
 
+    buffer_addresses[buff.index] = mapped_buffer;
+    buffer_sizes[buff.index] = buffer_size;
     if (mapped_buffer == MAP_FAILED) {
         perror("FAILED TO MAP BUFFER");
         return;
@@ -119,9 +123,20 @@ void start_streaming(int fd) {
         perror("FAILED TO START STREAMING");    
     }
 }
+void save_to_file(const void *buffer, size_t size) {
+    
+    FILE *file = fopen("frame.yuv", "wb");
+    if (file) {
+        fwrite(buffer, 1, size, file);
+        fclose(file);
+        printf("Saved frame to frame.yuv\n");
+    } else {
+        perror("FAILED TO OPEN FILE FOR WRITING");
+    }
+}
 
 void capture_loop(int fd , int buffer_count) {
-    
+    static int frame_saved = 0; // Flag to ensure only one frame is saved
     while(1) {
         struct v4l2_buffer buff;
         memset(&buff , 0 , sizeof(buff));
@@ -136,14 +151,47 @@ void capture_loop(int fd , int buffer_count) {
 
         // Process the captured frame (for example, save it to a file)
         printf("Captured frame in buffer %d\n", buff.index);
+        
+        
+        if (!frame_saved) {
+        save_to_file(buffer_addresses[buff.index], buff.bytesused);
+            frame_saved = 1;
+        }       
 
         // Re-queue the buffer
         if(ioctl(fd , VIDIOC_QBUF , &buff) < 0) {
             perror("FAILED TO RE-QUEUE BUFFER");
         }
+        break; // Exit after capturing one frame}
+}
+}
+void stop_streaming(int fd) {
+    
+    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if(ioctl(fd , VIDIOC_STREAMOFF , &type) < 0) {
+        perror("FAILED TO STOP STREAMING");
     }
 }
 
+void cleanup ( int fd , int buffer_count) {
+    
+    stop_streaming(fd);
+
+    for(int i = 0; i < buffer_count; i++) {
+        struct v4l2_buffer buff;
+        memset(&buff , 0 , sizeof(buff));
+        buff.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buff.memory = V4L2_MEMORY_MMAP;
+        buff.index = i;
+
+        // Unmap the buffer
+        if(munmap(buffer_addresses[buff.index], buffer_sizes[buff.index]) < 0) {
+            perror("FAILED TO UNMAP BUFFER");
+        }
+    }
+
+    close(fd);
+}
 
 int main()  { 
 
@@ -168,6 +216,8 @@ int main()  {
     queue_all_buffers(fd, buffer_count);
     start_streaming(fd);
     capture_loop(fd, buffer_count);
+    stop_streaming(fd);
+    cleanup(fd, buffer_count);
     return 0;
 
     
