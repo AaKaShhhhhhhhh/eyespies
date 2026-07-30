@@ -92,6 +92,22 @@ void mark_postion_on_frame(unsigned char *frame , int width , int height , Posit
     unsigned char mark_u = 0;
     unsigned char mark_v = 0;
 
-    get_pixel_yuv(frame, height, width, pos.x, pos.y, &mark_y, &mark_u, &mark_v);
+    int mark_size = 5; // Size of the mark
+    for(int dy = -mark_size; dy <= mark_size; dy++) {
+        for(int dx = -mark_size; dx <= mark_size; dx++) {
+            int mark_x = pos.x + dx;
+            int mark_y_pos = pos.y + dy;
+            if(mark_x >= 0 && mark_x < width && mark_y_pos >= 0 && mark_y_pos < height) {
+                int y_index = mark_y_pos * width + mark_x;
+                frame[y_index] = mark_y;
+                int uv_index = (mark_y_pos / 2) * (width / 2) + (mark_x / 2);
+                frame[width * height + uv_index] = mark_u;
+                frame[width * height + (width / 2) * (height / 2) + uv_index] = mark_v;
+            }
+        }
+    
+    }
+    
+   
     
 }
