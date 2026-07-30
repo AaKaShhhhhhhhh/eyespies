@@ -7,6 +7,14 @@
 #include<stdlib.h>
 #include<sys/mman.h>
 
+// Forward declaration for function defined in detection
+typedef struct {
+    int x;
+    int y;
+    int found;
+} Position;
+Position find_target_position(unsigned char *frame, int width, int height);
+
 
 
 int open_device(const char *dev_path) {
@@ -135,7 +143,7 @@ void save_to_file(const void *buffer, size_t size) {
     }
 }
 
-void capture_loop(int fd , int buffer_count) {
+void capture_loop(int fd, int buffer_count, int width, int height) {
     static int frame_saved = 0; // Flag to ensure only one frame is saved
     while(1) {
         struct v4l2_buffer buff;
@@ -153,17 +161,22 @@ void capture_loop(int fd , int buffer_count) {
         printf("Captured frame in buffer %d\n", buff.index);
         
         
-        if (!frame_saved) {
-        save_to_file(buffer_addresses[buff.index], buff.bytesused);
-            frame_saved = 1;
-        }       
+        // if (!frame_saved) {
+        // save_to_file(buffer_addresses[buff.index], buff.bytesused);
+        //     frame_saved = 1;
+        // }      
+        
+        Position pos = find_target_position(buffer_addresses[buff.index], width, height);
+        if(pos.found) {
+            printf("Target color found at position: (%d, %d)\n", pos.x,pos.y);
+        }
 
         // Re-queue the buffer
         if(ioctl(fd , VIDIOC_QBUF , &buff) < 0) {
             perror("FAILED TO RE-QUEUE BUFFER");
         }
-        break; // Exit after capturing one frame}
-}
+        break;
+    }
 }
 void stop_streaming(int fd) {
     
@@ -193,32 +206,3 @@ void cleanup ( int fd , int buffer_count) {
     close(fd);
 }
 
-int main()  { 
-
-   int fd = open_device("/dev/video0");
-   if(fd < 0 ) {
-    perror("FAILED TO OPEN DEVICE");
-   }
-
-    query_capabilities(fd);
-
-    set_format(fd, 640, 480);
-
-    int buffer_count = request_buffers(fd, 4);
-
-    if(buffer_count < 0) {
-        perror("FAILED TO REQUEST BUFFERS");
-    }
-    
-     for(int i = 0; i < buffer_count; i++) {
-         map_buffers(fd, i);
-     }
-    queue_all_buffers(fd, buffer_count);
-    start_streaming(fd);
-    capture_loop(fd, buffer_count);
-    stop_streaming(fd);
-    cleanup(fd, buffer_count);
-    return 0;
-
-    
-}
