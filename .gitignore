@@ -1,0 +1,20 @@
+# Build artifacts
+*.o
+*.a
+*.so
+
+# Test / capture outputs
+frame.yuv
+capture/frame.yuv
+
+# Compiled binaries
+v4l2
+turret
+main
+main_debian
+main_bbb
+cameraturret
+
+# Editor / OS junk
+.DS_Store
+*.swp
