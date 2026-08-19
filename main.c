@@ -15,9 +15,9 @@
 
 int main(int argc, char *argv[]) {
 
-    const char *dev = (argc > 1) ? argv[1] : "/dev/video0";
-    int fd = open_device(dev);
-    if(fd < 0 ){ perror("open device"); return 1;}
+    const char *dev = (argc > 1) ? argv[1] : NULL;
+    int fd = find_capture_device(dev);
+    if(fd < 0 ){ fprintf(stderr, "open device: no capture device\n"); return 1;}
 
     set_format(fd , WIDTH , HEIGHT);
     int n = request_buffers( fd , 4);

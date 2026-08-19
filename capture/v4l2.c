@@ -22,6 +22,58 @@ int open_device(const char *dev_path) {
     return fd;
 }
 
+/* ---------------------------------------------------------------------------
+ * UVC cameras (especially cheap ones) expose MULTIPLE /dev/video* nodes:
+ *   - one real VIDEO_CAPTURE node (the actual frames)
+ *   - often a second META_CAPTURE / metadata node
+ * The numbering (video0 vs video1) is NOT stable across reboots/replugs.
+ * So we validate a node with QUERYCAP and, if the preferred one is wrong,
+ * scan /dev/video0..video9 for the first genuine capture+streaming node.
+ * ------------------------------------------------------------------------- */
+static int is_video_capture_node(int fd) {
+    struct v4l2_capability cap;
+    memset(&cap, 0, sizeof(cap));
+    if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0)
+        return 0;
+    unsigned needed = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
+    return (cap.capabilities & needed) == needed;
+}
+
+/* Opens the best capture device.
+ *   - If `preferred` is given AND is a real capture node, use it.
+ *   - Otherwise scan /dev/video0..video9 and pick the first valid one.
+ * Returns an open fd, or -1 if none found. */
+int find_capture_device(const char *preferred) {
+    if (preferred) {
+        int fd = open(preferred, O_RDWR);
+        if (fd >= 0) {
+            if (is_video_capture_node(fd)) {
+                printf("Using preferred capture device: %s\n", preferred);
+                return fd;
+            }
+            printf("Note: %s is NOT a video-capture node (maybe metadata) — scanning...\n",
+                   preferred);
+            close(fd);
+        } else {
+            perror("open(preferred)");
+        }
+    }
+    for (int i = 0; i < 10; i++) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/video%d", i);
+        int fd = open(path, O_RDWR);
+        if (fd < 0) continue;
+        if (is_video_capture_node(fd)) {
+            printf("Auto-detected capture device: %s\n", path);
+            return fd;
+        }
+        close(fd);
+        /* path exists but isn't capture (e.g. metadata) — keep scanning */
+    }
+    fprintf(stderr, "ERROR: no V4L2 video-capture device found under /dev/video*\n");
+    return -1;
+}
+
 void query_capabilities(int fd) { 
 
     struct v4l2_capability cap;

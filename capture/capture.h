@@ -11,6 +11,7 @@ typedef struct {
 } Position;
 
 int open_device(const char *dev_path);
+int find_capture_device(const char *preferred);
 void query_capabilities(int fd);
 void set_format(int fd, int width, int height);
 int request_buffers(int fd, int count);
