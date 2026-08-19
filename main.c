@@ -13,9 +13,10 @@
 #define WIDTH 320
 #define HEIGHT 240
 
-int main() {
+int main(int argc, char *argv[]) {
 
-    int fd = open_device("/dev/video0");
+    const char *dev = (argc > 1) ? argv[1] : "/dev/video0";
+    int fd = open_device(dev);
     if(fd < 0 ){ perror("open device"); return 1;}
 
     set_format(fd , WIDTH , HEIGHT);
