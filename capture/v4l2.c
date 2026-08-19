@@ -5,7 +5,9 @@
 #include<linux/videodev2.h>
 #include<string.h>
 #include<stdlib.h>
-#include<sys/mman.h>
+#include <sys/mman.h>
+#include <sys/select.h>
+#include <errno.h>
 #include "control/control_loop.h"
 #include "pmw/pmw_servo.h"
 #include "detection/color_threshold.h"   /* Position + find_target_position() */
@@ -144,8 +146,30 @@ void capture_loop(int fd, int buffer_count, int width, int height , AxisState *p
     const float tilt_gain = 0.05f;
     const float smoothning = 0.5f;
     const float deadband  = 0.5f;
+    int consecutive_errors = 0;
 
     while(1) {
+        // Wait (with timeout) for a frame instead of busy-spinning.
+        // This keeps the CPU free so the servo thread stays smooth
+        // even if the camera stalls.
+        fd_set fds;
+        struct timeval tv;
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        tv.tv_sec  = 2;
+        tv.tv_usec = 0;
+
+        int r = select(fd + 1, &fds, NULL, NULL, &tv);
+        if (r == 0) {
+            printf("WARNING: camera timeout (no frame in 2s)\n");
+            usleep(100000);
+            continue;
+        } else if (r < 0) {
+            if (errno == EINTR) continue;
+            perror("select() failed");
+            break;
+        }
+
         struct v4l2_buffer buff;
         memset(&buff , 0 , sizeof(buff));
         buff.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -153,18 +177,23 @@ void capture_loop(int fd, int buffer_count, int width, int height , AxisState *p
 
         // Dequeue a buffer
         if(ioctl(fd , VIDIOC_DQBUF , &buff) < 0) {
+            if (errno == ENODEV) {
+                perror("CAMERA DISCONNECTED (ENODEV)");
+                break;   // device is gone — stop cleanly instead of spinning
+            }
             perror("FAILED TO DEQUEUE BUFFER");
+            consecutive_errors++;
+            if (consecutive_errors > 50) {
+                printf("Too many dequeue errors, stopping capture.\n");
+                break;
+            }
+            usleep(10000);
             continue;
         }
+        consecutive_errors = 0;
 
         // Process the captured frame (for example, save it to a file)
-        printf("Captured frame in buffer %d\n", buff.index);
-        
-        
-        // if (!frame_saved) {
-        // save_to_file(buffer_addresses[buff.index], buff.bytesused);
-        //     frame_saved = 1;
-        // }      
+        // printf("Captured frame in buffer %d\n", buff.index);
         
         Position pos = find_target_position(buffer_addresses[buff.index], width, height);
 
