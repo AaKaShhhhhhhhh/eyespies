@@ -43,7 +43,7 @@ void set_format(int fd , int width , int height) {
     fmt.fmt.pix.width = width;
     fmt.fmt.pix.height = height;
     fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-    fmt.fmt.pix.field = V4L2_FIELD_INTERLACED;
+    fmt.fmt.pix.field = V4L2_FIELD_NONE;
 
     if(ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
         perror("FAILED TO SET FORMAT");

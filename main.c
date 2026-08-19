@@ -10,8 +10,8 @@
 #define TILT_PWM_PATH  "/sys/class/pwm/pwmchip1/pwm1"
 #define PAN_PWM_PATH   "/sys/class/pwm/pwmchip1/pwm0"
 
-#define WIDTH 640
-#define HEIGHT 480
+#define WIDTH 320
+#define HEIGHT 240
 
 int main() {
 
