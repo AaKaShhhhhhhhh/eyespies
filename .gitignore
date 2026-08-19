@@ -18,3 +18,6 @@ cameraturret
 # Editor / OS junk
 .DS_Store
 *.swp
+
+# Compiler temp files
+*.tmp

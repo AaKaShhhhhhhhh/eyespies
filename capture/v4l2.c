@@ -6,14 +6,9 @@
 #include<string.h>
 #include<stdlib.h>
 #include<sys/mman.h>
-
-// Forward declaration for function defined in detection
-typedef struct {
-    int x;
-    int y;
-    int found;
-} Position;
-Position find_target_position(unsigned char *frame, int width, int height);
+#include "control/control_loop.h"
+#include "pmw/pmw_servo.h"
+#include "detection/color_threshold.h"   /* Position + find_target_position() */
 
 
 
@@ -143,8 +138,13 @@ void save_to_file(const void *buffer, size_t size) {
     }
 }
 
-void capture_loop(int fd, int buffer_count, int width, int height) {
-    static int frame_saved = 0; // Flag to ensure only one frame is saved
+void capture_loop(int fd, int buffer_count, int width, int height , AxisState *pan , AxisState *tilt , const char *pan_pwm_path , const char *tilt_pwm_path) {
+    
+    const float pan_gain = 0.05f;
+    const float tilt_gain = 0.05f;
+    const float smoothning = 0.5f;
+    const float deadband  = 0.5f;
+
     while(1) {
         struct v4l2_buffer buff;
         memset(&buff , 0 , sizeof(buff));
@@ -167,15 +167,33 @@ void capture_loop(int fd, int buffer_count, int width, int height) {
         // }      
         
         Position pos = find_target_position(buffer_addresses[buff.index], width, height);
+
         if(pos.found) {
             printf("Target color found at position: (%d, %d)\n", pos.x,pos.y);
+
+            float pan_delta = error_to_angle_delta(pos.x , width/2 , pan_gain);
+            float pan_raw = pan->current_angle+pan_delta;
+            float pan_new = clamp_angle(
+                smooth_angle(pan->current_angle , pan_raw , smoothning) , 0 , 180);
+            if(should_update(pan->current_angle , pan_new , deadband)) {
+                servo_set_angle(pan_pwm_path , pan_new);
+                pan->current_angle = pan_new;
+            }
+
+            float tilt_delta = error_to_angle_delta(pos.y , height/2 , tilt_gain);
+            float tilt_raw = tilt->current_angle+tilt_delta;
+            float tilt_new = clamp_angle(
+                smooth_angle(tilt->current_angle , tilt_raw , smoothning) , 0 , 180);
+            if(should_update(tilt->current_angle , tilt_new , deadband)) {
+                servo_set_angle(tilt_pwm_path , tilt_new);
+                tilt->current_angle = tilt_new;
+            }
         }
 
         // Re-queue the buffer
         if(ioctl(fd , VIDIOC_QBUF , &buff) < 0) {
             perror("FAILED TO RE-QUEUE BUFFER");
         }
-        break;
     }
 }
 void stop_streaming(int fd) {

@@ -2,6 +2,7 @@
 #define CAPTURE_H
 
 #include <stddef.h>
+#include "control/control_loop.h"   /* for AxisState */
 
 typedef struct {
     int x;
@@ -17,7 +18,9 @@ void map_buffers(int fd, int index);
 void queue_all_buffers(int fd, int buffers);
 void start_streaming(int fd);
 void save_to_file(const void *buffer, size_t size);
-void capture_loop(int fd, int buffer_count, int width, int height);
+void capture_loop(int fd, int buffer_count, int width, int height,
+                  AxisState *pan, AxisState *tilt,
+                  const char *pan_pwm_path, const char *tilt_pwm_path);
 void stop_streaming(int fd);
 void cleanup(int fd, int buffer_count);
 

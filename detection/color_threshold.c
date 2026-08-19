@@ -3,11 +3,7 @@
 #include<fcntl.h>
 #include<unistd.h>
 
-typedef struct {
-    int x ;
-    int y ;
-    int found;
-} Position;
+#include "capture/capture.h"   /* Position is defined here */
 
 unsigned char* load_yuv_frame(const char *path , int width , int height) {
     int fd = open(path , O_RDONLY);
@@ -124,6 +120,7 @@ void mark_postion_on_frame(unsigned char *frame , int width , int height , Posit
     }
 }
 
+#ifdef STANDALONE_TEST
 int main() {
     const char *path = "frame.yuv";
     int width = 640;
@@ -145,3 +142,4 @@ int main() {
     free(frame);
     return EXIT_SUCCESS;
 }
+#endif /* STANDALONE_TEST */
