@@ -7,25 +7,31 @@
 /* ---------------------------------------------------------------------------
  * TUNABLES
  * ------------------------------------------------------------------------- */
-#define MOTION_THRESHOLD 30     /* per-pixel brightness delta to count as "moved" */
+#define MOTION_THRESHOLD 25     /* per-pixel brightness delta to count as "moved" */
 #define MOTION_MIN_FRAC  150    /* changed pixels must EXCEED (w*h)/MIN_FRAC to
-                                   report motion. Higher bar = ignores the faint
-                                   per-frame flicker of an auto-exposure UVC
-                                   camera (the jitter cause). ~0.7% of frame.   */
+                                   report motion. Higher bar ignores faint sensor
+                                   noise. ~0.7% of a 320x240 frame.             */
 #define MOTION_MAX_FRAC  3      /* if changed pixels EXCEED (w*h)/MAX_FRAC the
-                                   WHOLE frame moved (servo/camera panned) ->
+                                   WHOLE frame shifted (servo/camera panned) ->
                                    ignore, or we oscillate around centre.       */
 #define MOTION_PERSIST   2      /* require motion in this many CONSECUTIVE frames
                                    before reporting. Random noise won't sustain;
                                    real motion will.                            */
 
-/* Background model: a slowly-adapting per-pixel brightness average.
- * KEY TRICK (running average with a motion veto):
- *   - Normally baseline follows the scene: baseline = baseline*0.9 + frame*0.1
- *   - BUT if a pixel changed a lot, we DO NOT update its baseline. A moving
- *     object therefore never "poisons" the background, and once it leaves, the
- *     background is still correct. This is why we do NOT just copy the previous
- *     frame every time (that copied frame-to-frame flicker and caused jitter). */
+/* Background model: an EXPONENTIALLY-WEIGHTED moving average of brightness.
+ *
+ *   bg = bg*0.9 + frame*0.1     (every pixel, every frame)
+ *
+ * WHY this is the right model for a moving turret:
+ *   - SLOW global changes (the servo panning the camera, gradual lighting
+ *     drift, auto-exposure pumping) are tracked by the average, so they do
+ *     NOT look like motion. This is what killed the old per-frame copy, which
+ *     flagged every flicker as motion and made the servo jitter forever.
+ *   - FAST LOCAL changes (a hand/body moving through the frame) outrun the
+ *     average, so for those pixels frame - bg is large -> counted as motion.
+ *
+ * The time constant is ~10 frames (~0.3s at 30fps): a moving person is far
+ * faster than that, the servo drift is slower, so the two are separable. */
 static unsigned char *bg = NULL;
 static int bg_w = 0, bg_h = 0;
 static int persist_count = 0;
@@ -84,15 +90,13 @@ Position find_motion_position(unsigned char *frame, int width, int height) {
                 sum_x += x;
                 sum_y += y;
                 count++;
-                /* motion veto: do NOT let this pixel pull the background.
-                 * This is what stops a moving object (and camera flicker that
-                 * looks like motion) from rewriting the reference frame. */
-            } else {
-                /* quiet pixel: let background adapt slowly to lighting drift */
-                int b = bg[idx];
-                b = (b * 9 + cur) / 10;
-                bg[idx] = (unsigned char)b;
             }
+            /* ALWAYS adapt the background. Slow drift is absorbed; fast
+             * motion is outrun and still counted above. Integer EMA:
+             * bg = (bg*9 + cur)/10. */
+            int b = bg[idx];
+            b = (b * 9 + cur) / 10;
+            bg[idx] = (unsigned char)b;
         }
     }
 
@@ -100,7 +104,7 @@ Position find_motion_position(unsigned char *frame, int width, int height) {
     long max_px = ((long)width * (long)height) / MOTION_MAX_FRAC;
 
     if (count > max_px) {
-        persist_count = 0;     /* whole-frame change = camera moved; ignore */
+        persist_count = 0;     /* whole-frame shift = camera moved; ignore */
         return pos;
     }
     if (count > min_px) {
