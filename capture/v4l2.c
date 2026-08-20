@@ -194,10 +194,10 @@ void save_to_file(const void *buffer, size_t size) {
 
 void capture_loop(int fd, int buffer_count, int width, int height , AxisState *pan , AxisState *tilt , const char *pan_pwm_path , const char *tilt_pwm_path) {
     
-    const float pan_gain = 0.04f;
-    const float tilt_gain = 0.04f;
-    const float smoothning = 0.85f;
-    const float deadband  = 4.0f;
+    const float pan_gain = 0.08f;
+    const float tilt_gain = 0.08f;
+    const float smoothning = 0.5f;
+    const float deadband  = 0.3f;
     int consecutive_errors = 0;
 
     while(1) {
@@ -270,6 +270,8 @@ void capture_loop(int fd, int buffer_count, int width, int height , AxisState *p
                 servo_set_angle(tilt_pwm_path , tilt_new);
                 tilt->current_angle = tilt_new;
             }
+
+            printf("  angles: pan=%.1f tilt=%.1f\n", pan->current_angle, tilt->current_angle);
         }
 
         // Re-queue the buffer
