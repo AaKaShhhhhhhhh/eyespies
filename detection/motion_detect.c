@@ -8,14 +8,21 @@
  * TUNABLES
  * ------------------------------------------------------------------------- */
 #define MOTION_THRESHOLD 25     /* brightness delta to count a pixel as "moved" */
-#define MOTION_MIN_FRAC  200    /* changed pixels must EXCEED (w*h)/MIN_FRAC     */
+#define MOTION_MIN_FRAC  40     /* changed pixels must EXCEED (w*h)/MIN_FRAC.
+                                   Higher = needs MORE motion to count (rejects
+                                   the per-frame flicker of an auto-exposure
+                                   UVC camera, which is what caused jitter).    */
 #define MOTION_MAX_FRAC  3      /* ...but if changed pixels EXCEED (w*h)/MAX_FRAC
                                    the WHOLE frame moved (servo/camera panned) ->
                                    ignore it, or we oscillate around centre.     */
+#define MOTION_PERSIST   2      /* require motion in this many CONSECUTIVE frames
+                                   before reporting it. Random noise flicker
+                                   won't sustain; real motion will.            */
 
 /* Previous frame brightness, as a flat w*h array of Y bytes. */
 static unsigned char *prev_y = NULL;
 static int prev_w = 0, prev_h = 0;
+static int persist_count = 0;
 
 /* When we (re)allocate the baseline buffer, the next detection pass should
  * just record the current frame as the baseline instead of reporting motion
@@ -29,6 +36,7 @@ static void ensure_prev(int w, int h) {
         prev_w = w;
         prev_h = h;
         need_baseline = 1;
+        persist_count = 0;
     }
 }
 
@@ -39,6 +47,7 @@ void motion_reset(void) {
     prev_y = NULL;
     prev_w = prev_h = 0;
     need_baseline = 0;
+    persist_count = 0;
 }
 
 /* Read the Y (brightness) byte for pixel (x,y) from a packed YUYV buffer.
@@ -59,6 +68,7 @@ Position find_motion_position(unsigned char *frame, int width, int height) {
             for (int x = 0; x < width; x++)
                 prev_y[(size_t)y * width + x] = y_at(frame, width, x, y);
         need_baseline = 0;
+        persist_count = 0;
         return pos;            /* found = 0 */
     }
 
@@ -80,12 +90,21 @@ Position find_motion_position(unsigned char *frame, int width, int height) {
 
     long min_px = ((long)width * (long)height) / MOTION_MIN_FRAC;
     long max_px = ((long)width * (long)height) / MOTION_MAX_FRAC;
-    if (count > max_px)
-        return pos;            /* whole-frame change = camera moved; ignore */
+
+    if (count > max_px) {
+        persist_count = 0;     /* whole-frame change = camera moved; ignore */
+        return pos;
+    }
     if (count > min_px) {
-        pos.x = (int)(sum_x / count);
-        pos.y = (int)(sum_y / count);
-        pos.found = 1;
+        persist_count++;
+        if (persist_count >= MOTION_PERSIST) {
+            pos.x = (int)(sum_x / count);
+            pos.y = (int)(sum_y / count);
+            pos.found = 1;
+        }
+        /* else: motion this frame but not yet persistent -> hold last position */
+    } else {
+        persist_count = 0;     /* noise / no motion -> reset */
     }
     return pos;
 }

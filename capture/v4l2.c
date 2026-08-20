@@ -197,7 +197,7 @@ void capture_loop(int fd, int buffer_count, int width, int height , AxisState *p
     const float pan_gain = 0.08f;
     const float tilt_gain = 0.08f;
     const float smoothning = 0.5f;
-    const float deadband  = 0.3f;
+    const float deadband  = 1.0f;
     int consecutive_errors = 0;
 
     while(1) {
