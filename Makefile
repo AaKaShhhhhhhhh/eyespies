@@ -10,7 +10,7 @@ LIBS    = -lpthread -lm -lrt -lgpiod
 
 CAPTURE_OBJS   = capture/v4l2.o
 CONTROL_OBJS   = control/control_loop.o
-DETECTION_OBJS = detection/color_threshold.o
+DETECTION_OBJS = detection/color_threshold.o detection/motion_detect.o
 PWM_OBJS       = pmw/pmw_servo.o
 OBJS = $(CAPTURE_OBJS) $(CONTROL_OBJS) $(DETECTION_OBJS) $(PWM_OBJS)
 
@@ -31,6 +31,10 @@ control/control_loop.o: control/control_loop.c control/control_loop.h
 detection/color_threshold.o: detection/color_threshold.c detection/color_threshold.h \
                               capture/capture.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ detection/color_threshold.c
+
+detection/motion_detect.o: detection/motion_detect.c detection/motion_detect.h \
+                           capture/capture.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ detection/motion_detect.c
 
 pmw/pmw_servo.o: pmw/pmw_servo.c pmw/pmw_servo.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ pmw/pmw_servo.c

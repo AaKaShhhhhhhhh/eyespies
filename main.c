@@ -1,10 +1,12 @@
 #include "capture/capture.h"
 #include "detection/color_threshold.h"
+#include "detection/motion_detect.h"
 #include "control/control_loop.h"
 #include "pmw/pmw_servo.h"
 
 #include <stdio.h>
 #include <unistd.h>
+#include <string.h>
 
 
 #define TILT_PWM_PATH  "/sys/class/pwm/pwmchip1/pwm1"
@@ -16,8 +18,10 @@
 int main(int argc, char *argv[]) {
 
     const char *dev = (argc > 1) ? argv[1] : NULL;
+    int use_motion = (argc > 2) && (strcmp(argv[2], "motion") == 0);
     int fd = find_capture_device(dev);
     if(fd < 0 ){ fprintf(stderr, "open device: no capture device\n"); return 1;}
+    if (use_motion) motion_reset();
 
     set_format(fd , WIDTH , HEIGHT);
     int n = request_buffers( fd , 4);
@@ -36,7 +40,7 @@ int main(int argc, char *argv[]) {
     pwm_enable(PAN_PWM_PATH , 1);
     pwm_enable(TILT_PWM_PATH , 1);
 
-    capture_loop(fd , n , WIDTH , HEIGHT , &pan , &tilt , PAN_PWM_PATH , TILT_PWM_PATH );
+    capture_loop(fd , n , WIDTH , HEIGHT , &pan , &tilt , PAN_PWM_PATH , TILT_PWM_PATH , use_motion );
 
     cleanup(fd , n);
     return 0;
