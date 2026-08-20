@@ -10,7 +10,6 @@
 #include <errno.h>
 #include "control/control_loop.h"
 #include "pmw/pmw_servo.h"
-#include "detection/color_threshold.h"   /* Position + find_target_position() */
 #include "detection/motion_detect.h"     /* Position + find_motion_position() */
 
 
@@ -193,7 +192,7 @@ void save_to_file(const void *buffer, size_t size) {
     }
 }
 
-void capture_loop(int fd, int buffer_count, int width, int height , AxisState *pan , AxisState *tilt , const char *pan_pwm_path , const char *tilt_pwm_path, int use_motion) {
+void capture_loop(int fd, int buffer_count, int width, int height , AxisState *pan , AxisState *tilt , const char *pan_pwm_path , const char *tilt_pwm_path) {
     
     const float pan_gain = 0.05f;
     const float tilt_gain = 0.05f;
@@ -248,16 +247,9 @@ void capture_loop(int fd, int buffer_count, int width, int height , AxisState *p
         // Process the captured frame (for example, save it to a file)
         // printf("Captured frame in buffer %d\n", buff.index);
         
-        Position pos;
-        if (use_motion) {
-            pos = find_motion_position(buffer_addresses[buff.index], width, height);
-            if (pos.found)
-                printf("Motion found at position: (%d, %d)\n", pos.x, pos.y);
-        } else {
-            pos = find_target_position(buffer_addresses[buff.index], width, height);
-            if (pos.found)
-                printf("Target color found at position: (%d, %d)\n", pos.x, pos.y);
-        }
+        Position pos = find_motion_position(buffer_addresses[buff.index], width, height);
+        if (pos.found)
+            printf("Motion found at position: (%d, %d)\n", pos.x, pos.y);
 
         if(pos.found) {
 
