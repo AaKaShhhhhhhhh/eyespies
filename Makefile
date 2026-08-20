@@ -22,7 +22,7 @@ all: $(OBJS)
 # Final on-board binary: camera + detection + control + pwm, no network.
 # We compile each module with the shared include paths so headers resolve.
 capture/v4l2.o: capture/v4l2.c capture/capture.h control/control_loop.h \
-                pmw/pmw_servo.h detection/color_threshold.h
+                pmw/pmw_servo.h detection/motion_detect.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ capture/v4l2.c
 
 control/control_loop.o: control/control_loop.c control/control_loop.h
