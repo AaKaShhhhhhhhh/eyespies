@@ -7,45 +7,45 @@
 /* ---------------------------------------------------------------------------
  * TUNABLES
  * ------------------------------------------------------------------------- */
-#define MOTION_THRESHOLD 25     /* brightness delta to count a pixel as "moved" */
-#define MOTION_MIN_FRAC  40     /* changed pixels must EXCEED (w*h)/MIN_FRAC.
-                                   Higher = needs MORE motion to count (rejects
-                                   the per-frame flicker of an auto-exposure
-                                   UVC camera, which is what caused jitter).    */
-#define MOTION_MAX_FRAC  3      /* ...but if changed pixels EXCEED (w*h)/MAX_FRAC
-                                   the WHOLE frame moved (servo/camera panned) ->
-                                   ignore it, or we oscillate around centre.     */
+#define MOTION_THRESHOLD 30     /* per-pixel brightness delta to count as "moved" */
+#define MOTION_MIN_FRAC  150    /* changed pixels must EXCEED (w*h)/MIN_FRAC to
+                                   report motion. Higher bar = ignores the faint
+                                   per-frame flicker of an auto-exposure UVC
+                                   camera (the jitter cause). ~0.7% of frame.   */
+#define MOTION_MAX_FRAC  3      /* if changed pixels EXCEED (w*h)/MAX_FRAC the
+                                   WHOLE frame moved (servo/camera panned) ->
+                                   ignore, or we oscillate around centre.       */
 #define MOTION_PERSIST   2      /* require motion in this many CONSECUTIVE frames
-                                   before reporting it. Random noise flicker
-                                   won't sustain; real motion will.            */
+                                   before reporting. Random noise won't sustain;
+                                   real motion will.                            */
 
-/* Previous frame brightness, as a flat w*h array of Y bytes. */
-static unsigned char *prev_y = NULL;
-static int prev_w = 0, prev_h = 0;
+/* Background model: a slowly-adapting per-pixel brightness average.
+ * KEY TRICK (running average with a motion veto):
+ *   - Normally baseline follows the scene: baseline = baseline*0.9 + frame*0.1
+ *   - BUT if a pixel changed a lot, we DO NOT update its baseline. A moving
+ *     object therefore never "poisons" the background, and once it leaves, the
+ *     background is still correct. This is why we do NOT just copy the previous
+ *     frame every time (that copied frame-to-frame flicker and caused jitter). */
+static unsigned char *bg = NULL;
+static int bg_w = 0, bg_h = 0;
 static int persist_count = 0;
-
-/* When we (re)allocate the baseline buffer, the next detection pass should
- * just record the current frame as the baseline instead of reporting motion
- * (otherwise the very first frame would look like "everything moved"). */
 static int need_baseline = 0;
 
-static void ensure_prev(int w, int h) {
-    if (!prev_y || prev_w != w || prev_h != h) {
-        free(prev_y);
-        prev_y = (unsigned char *)malloc((size_t)w * (size_t)h);
-        prev_w = w;
-        prev_h = h;
+static void ensure_bg(int w, int h) {
+    if (!bg || bg_w != w || bg_h != h) {
+        free(bg);
+        bg = (unsigned char *)malloc((size_t)w * (size_t)h);
+        bg_w = w;
+        bg_h = h;
         need_baseline = 1;
         persist_count = 0;
     }
 }
 
-/* Call this when switching INTO motion mode (or changing resolution) so we
- * don't treat the stale previous frame as "motion". */
 void motion_reset(void) {
-    free(prev_y);
-    prev_y = NULL;
-    prev_w = prev_h = 0;
+    free(bg);
+    bg = NULL;
+    bg_w = bg_h = 0;
     need_baseline = 0;
     persist_count = 0;
 }
@@ -59,32 +59,40 @@ static inline unsigned char y_at(const unsigned char *frame, int w, int x, int y
 Position find_motion_position(unsigned char *frame, int width, int height) {
     Position pos = {0, 0, 0};
 
-    ensure_prev(width, height);
-    if (!prev_y) return pos;   /* allocation failed */
+    ensure_bg(width, height);
+    if (!bg) return pos;
 
-    /* First frame after (re)alloc: just record baseline, report nothing. */
+    /* First frame after (re)alloc: seed the background, report nothing. */
     if (need_baseline) {
         for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++)
-                prev_y[(size_t)y * width + x] = y_at(frame, width, x, y);
+                bg[(size_t)y * width + x] = y_at(frame, width, x, y);
         need_baseline = 0;
         persist_count = 0;
-        return pos;            /* found = 0 */
+        return pos;
     }
 
     long sum_x = 0, sum_y = 0, count = 0;
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            unsigned char cur = y_at(frame, width, x, y);
             int idx = (size_t)y * width + x;
-            int diff = cur - prev_y[idx];
+            unsigned char cur = y_at(frame, width, x, y);
+            int diff = (int)cur - (int)bg[idx];
             if (diff < 0) diff = -diff;
+
             if (diff > MOTION_THRESHOLD) {
                 sum_x += x;
                 sum_y += y;
                 count++;
+                /* motion veto: do NOT let this pixel pull the background.
+                 * This is what stops a moving object (and camera flicker that
+                 * looks like motion) from rewriting the reference frame. */
+            } else {
+                /* quiet pixel: let background adapt slowly to lighting drift */
+                int b = bg[idx];
+                b = (b * 9 + cur) / 10;
+                bg[idx] = (unsigned char)b;
             }
-            prev_y[idx] = cur;   /* update baseline for next frame */
         }
     }
 
@@ -102,7 +110,6 @@ Position find_motion_position(unsigned char *frame, int width, int height) {
             pos.y = (int)(sum_y / count);
             pos.found = 1;
         }
-        /* else: motion this frame but not yet persistent -> hold last position */
     } else {
         persist_count = 0;     /* noise / no motion -> reset */
     }
