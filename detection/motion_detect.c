@@ -8,7 +8,10 @@
  * TUNABLES
  * ------------------------------------------------------------------------- */
 #define MOTION_THRESHOLD 25     /* brightness delta to count a pixel as "moved" */
-#define MOTION_MIN_FRAC  200    /* changed pixels must exceed (w*h)/MIN_FRAC     */
+#define MOTION_MIN_FRAC  200    /* changed pixels must EXCEED (w*h)/MIN_FRAC     */
+#define MOTION_MAX_FRAC  3      /* ...but if changed pixels EXCEED (w*h)/MAX_FRAC
+                                   the WHOLE frame moved (servo/camera panned) ->
+                                   ignore it, or we oscillate around centre.     */
 
 /* Previous frame brightness, as a flat w*h array of Y bytes. */
 static unsigned char *prev_y = NULL;
@@ -76,6 +79,9 @@ Position find_motion_position(unsigned char *frame, int width, int height) {
     }
 
     long min_px = ((long)width * (long)height) / MOTION_MIN_FRAC;
+    long max_px = ((long)width * (long)height) / MOTION_MAX_FRAC;
+    if (count > max_px)
+        return pos;            /* whole-frame change = camera moved; ignore */
     if (count > min_px) {
         pos.x = (int)(sum_x / count);
         pos.y = (int)(sum_y / count);

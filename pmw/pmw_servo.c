@@ -35,6 +35,15 @@
 #include <time.h>
 #include <gpiod.h>
 
+/* We bit-bang a 50 Hz servo pulse from userspace. If the kernel ever preempts
+ * this thread mid-pulse, the servo gets a wrong-width pulse and buzzes/jitters.
+ * So we give the pulse thread the HIGHEST scheduling priority available to an
+ * unprivileged-ish process. (Run the binary as root — sudo — and this works.) */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <sched.h>
+
 /* ------------------------------------------------------------------ */
 /* Servo axis registry                                                 */
 /* We map the OLD /sys/class/pwm path strings (used by main.c) to the   */
@@ -169,6 +178,12 @@ void pwm_enable(const char *pwm_path, int enable) {
         }
         a->running = 1;
         pthread_create(&a->thread, NULL, pwm_thread, a);
+        /* Boost the pulse thread to realtime so the 50 Hz signal stays rock
+         * steady even while the camera loop is busy. Prevents servo buzz. */
+        struct sched_param sp;
+        sp.sched_priority = sched_get_priority_max(SCHED_FIFO);
+        if (sp.sched_priority > 0)
+            pthread_setschedparam(a->thread, SCHED_FIFO, &sp);
     } else {
         if (!a->running) return;
         a->running = 0;                    /* tell thread to stop */
