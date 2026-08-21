@@ -118,6 +118,3 @@ void main(void) {
     }
 #endif
 }
-
-/* never reached, but keeps the toolchain happy */
-__halt();
