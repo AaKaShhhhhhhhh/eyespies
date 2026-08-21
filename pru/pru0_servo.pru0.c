@@ -65,20 +65,44 @@ static inline void prcm_ocp_enable(void) {
     }
 }
 
+/* helper: make P9_16 an OUTPUT (clear bit 19 in the OE register). */
+static inline void p9_16_output(void) {
+    (*(volatile uint32_t*)(GPIO1_BASE + GPIO_OE)) &= ~P9_16_BIT;
+}
+
+/* helper: one delay chunk -- CONSTANT cycles so __delay_cycles
+   expands to a reliable inline loop on this compiler. */
+#define UNIT_CYCLES   2000u    /* 10 us per chunk (constant -> safe) */
+
 void main(void){
 #ifdef BLINK_TEST
-    prcm_ocp_enable();              /* wake OCP + turn on GPIO1 clock */
-
-    /* make P9_16 an OUTPUT (clear bit 19 in the OE register). */
-    (*(volatile uint32_t*)(GPIO1_BASE + GPIO_OE)) &= ~P9_16_BIT;
-
-    /* toggle 10 times: HIGH 100 ms, LOW 100 ms. */
+    /* ---- 5 Hz toggle, only to prove the pin can flip --------------- */
+    prcm_ocp_enable();
+    p9_16_output();
     int i;
     for (i = 0; i < 10; i++){
         (*(volatile uint32_t*)(GPIO1_BASE + GPIO_SETDATAOUT))   = P9_16_BIT;
         DELAY_MS(100);
         (*(volatile uint32_t*)(GPIO1_BASE + GPIO_CLEARDATAOUT)) = P9_16_BIT;
         DELAY_MS(100);
+    }
+#elif defined(SERVO_STEADY)
+    /* ============================================================
+       DIAGNOSTIC: hold a STEADY 1.5 ms center pulse forever.
+       Constant delays only -> timing is rock solid.
+       WHY: if THIS moves the servo but the sweep doesn't, the
+       bug is in the sweep's variable-count delay logic. If THIS
+       ALSO does nothing, the PRU's writes aren't reaching the
+       pin at all (clock/pinmux) and we move the diagnostic to
+       the Linux side.
+       ============================================================ */
+    prcm_ocp_enable();
+    p9_16_output();
+    for (;;) {
+        (*(volatile uint32_t*)(GPIO1_BASE + GPIO_SETDATAOUT))   = P9_16_BIT;  /* HIGH */
+        for (uint32_t k = 0; k < 150u; k++) __delay_cycles(UNIT_CYCLES);       /* 1.5 ms */
+        (*(volatile uint32_t*)(GPIO1_BASE + GPIO_CLEARDATAOUT)) = P9_16_BIT;   /* LOW  */
+        for (uint32_t k = 0; k < 1850u; k++) __delay_cycles(UNIT_CYCLES);      /* 18.5 ms -> 50 Hz */
     }
 #else
     /* ============================================================
@@ -100,13 +124,11 @@ void main(void){
        we loop -- never the chunk size.
        ============================================================ */
 
-    #define UNIT_CYCLES   2000u    /* 10 us per chunk (constant -> safe) */
     #define PERIOD_UNITS  2000u    /* 2000 chunks = 20 ms => 50 Hz       */
     /* pulse spans 100..200 chunks == 1.0 ms .. 2.0 ms */
 
-    prcm_ocp_enable();              /* wake OCP + turn on GPIO1 clock */
-    /* make P9_16 an OUTPUT. */
-    (*(volatile uint32_t*)(GPIO1_BASE + GPIO_OE)) &= ~P9_16_BIT;
+    prcm_ocp_enable();
+    p9_16_output();
 
     for (;;) {
         /* sweep UP: pulse 1.0ms -> 2.0ms */
