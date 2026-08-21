@@ -1,35 +1,47 @@
 # pru/Makefile
 # ===========================================================================
-# Build the PRU firmware on the BeagleBone Black.
-# Requires:  sudo apt install gcc-pru
+# Build the PRU firmware + a tiny Linux helper on the BeagleBone Black.
+# Requires on the board:
+#   sudo apt install gcc-pru          # for the .out PRU firmware
+#   sudo apt install libgpiod-dev     # for gpio_hold.c
 #
-# NOTE: We intentionally do NOT pass -I to TI's Code Generation Tools include
-# dir. GNU gcc-pru ships its own standard C headers; pointing it at TI's CGT
-# headers (which target TI's proprietary compiler) breaks <stddef.h>. The
-# resource table header is self-contained, so no -I is needed.
+# WHY TWO BINARIES:
+#   The PRU can write the GPIO0 registers, but it CANNOT keep the pin "alive"
+#   on its own -- Linux owns the pad mux + the GPIO0 clock and turns both off
+#   when no Linux process holds the line. So we run `gpio_hold` (or
+#   `gpioset -b gpiochip0 19=0`) to keep the line requested, THEN load the PRU
+#   firmware which pokes the same DATAOUT register and reaches the wire.
+#
+# NOTE: We do NOT pass -I to TI's CGT include dir. GNU gcc-pru ships its own
+# standard C headers; the resource table header is self-contained.
 # ===========================================================================
 
-# Default target: build the sweep + steady diagnostic + blink.
-#   pru0_servo.out  -> real 50 Hz servo SWEEP on P9_16 (project goal)
-#   servo_steady.out-> DIAGNOSTIC: hold a constant 1.5 ms center pulse
-#                       (proves the PRU can drive the pin at all)
-#   blink.out       -> 5 Hz GPIO toggle, for isolating the pin
-all: pru0_servo.out servo_steady.out blink.out
+# Default target: PRU sweep + steady diagnostic + blink, plus the Linux holder.
+#   pru0_servo.out   -> real 50 Hz servo SWEEP on GPIO0_19 (the servo pin)
+#   servo_steady.out -> DIAGNOSTIC: constant 1.5 ms center pulse
+#   blink.out        -> 5 Hz toggle, for isolating the pin
+#   gpio_hold        -> Linux helper that holds gpiochip0 line 19 so the PRU
+#                       writes actually reach the pad
+all: pru0_servo.out servo_steady.out blink.out gpio_hold
 
-# Real servo firmware -- PRU emits 50 Hz PWM sweep on P9_16 all by itself.
+# Real servo firmware -- PRU emits 50 Hz PWM sweep on GPIO0_19.
 pru0_servo.out: pru0_servo.pru0.c resource_table_empty.h
 	pru-gcc -O2 -Wall -mmcu=am335x.pru0 -o $@ $<
 
-# Diagnostic: hold a STEADY 1.5 ms pulse (servo center). If this moves
-# the servo but the sweep doesn't, the bug is in the sweep delay logic.
+# Diagnostic: hold a STEADY 1.5 ms pulse (servo center).
 servo_steady.out: pru0_servo.pru0.c resource_table_empty.h
 	pru-gcc -O2 -Wall -DSERVO_STEADY -mmcu=am335x.pru0 -o $@ $<
 
-# Blink test -- define BLINK_TEST (5 Hz toggle; use only to prove pin toggles).
+# Blink test -- 5 Hz GPIO toggle (define BLINK_TEST) for isolating the pin.
 blink.out: pru0_servo.pru0.c resource_table_empty.h
 	pru-gcc -O2 -Wall -DBLINK_TEST -mmcu=am335x.pru0 -o $@ $<
 
+# Linux helper: hold gpiochip0 line 19 (GPIO0_19) as output forever so the
+# PRU's writes reach the wire. Built with the normal ARM gcc + libgpiod.
+gpio_hold: gpio_hold.c
+	gcc -O2 -Wall -o $@ $< -lgpiod
+
 clean:
-	rm -f *.out
+	rm -f *.out gpio_hold
 
 .PHONY: all clean
