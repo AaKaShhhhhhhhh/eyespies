@@ -22,6 +22,8 @@
 #   blink.out        -> 5 Hz toggle, for isolating the pin
 #   gpio_hold        -> Linux helper that holds gpiochip0 line 19 so the PRU
 #                       writes actually reach the pad
+CFLAGS += -I/usr/lib/ti/pru-software-support-package-v6.3/include/am335x
+
 all: pru0_servo.out servo_steady.out hold_high.out blink.out gpio_hold gpio_read
 
 # Real servo firmware -- PRU emits 50 Hz PWM sweep on GPIO0_19.
@@ -58,4 +60,4 @@ clean:
 
 .PHONY: all clean
 
-CFLAGS += -I/usr/lib/ti/pru-software-support-package-v6.3/include/am335x
+
