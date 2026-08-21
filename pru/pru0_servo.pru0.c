@@ -18,7 +18,8 @@
  * Load:   sudo ./load_pru0.sh pru0_servo.out   (or servo_steady.out)
  * ---------------------------------------------------------------------------
  */
-
+#include <stdint.h>
+#include <pru_cfg.h>
 #include "resource_table_empty.h"
 
 /* --- GPIO0 register map (AM335x TRM) --- */
