@@ -3,7 +3,8 @@
  *
  * WHY THIS EXISTS:
  *   We need to prove the PIN + SERVO + WIRING work WITHOUT involving the PRU.
- *   P9_16 = GPIO1_19 = gpiochip0 line 19 on the BeagleBone Black.
+ *   P9_16 = GPIO0_19 = gpiochip0 line 19 on the BeagleBone Black.
+ *   (verified via `gpiodetect`: gpiochip0 = [gpio-0-31] = GPIO0, base 0x44E07000)
  *
  *   If this makes the servo sweep/whir, then pin+servo+wiring are GOOD and the
  *   only remaining problem was the PRU firmware/loader. If it does NOTHING,

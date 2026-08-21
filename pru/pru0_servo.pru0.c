@@ -2,154 +2,122 @@
 #include "resource_table_empty.h"
 
 /* ============================================================
-   WHY we poke the GPIO peripheral (and NOT __R30):
-   P9_16 = GPIO1_19. On a stock BeagleBone the pin is muxed to
-   plain GPIO mode, NOT to a PRU "direct output" (R30) line.
-   So writing __R30 does nothing on P9_16 -- that is why you
-   heard no click earlier. The fix: the PRU reaches out over the
-   OCP bus and writes straight into the GPIO1 hardware registers.
-   No device-tree / pinmux change needed; the pin stays in GPIO
-   mode (the same mode gpiod used to move the servo before).
+   THE ONE LESSON BEHIND ALL THE SILENCE (read this first):
+   ------------------------------------------------------------
+   P9_16 is NOT GPIO1_19. On this BeagleBone:
+       gpiodetect -> "gpiochip0 [gpio-0-31]"  = GPIO0  (base 0x44E07000)
+       gpiodetect -> "gpiochip1 [gpio-32-63]" = GPIO1  (base 0x4804C000)
+   Your WORKING userspace test used gpiochip0 line 19 = GPIO0_19.
+   So the servo lives on GPIO0, and the PRU must poke GPIO0.
+   (An earlier version poked GPIO1_19 = an empty pin = servo never moved.)
 
-   THE TRAP THAT BIT US: the GPIO1 block has its OWN clock gate
-   inside the PRCM (power/clock manager). When Linux's gpiod ran,
-   it switched that clock ON. The moment the program exited, Linux
-   gated the clock OFF again to save power. With the clock off,
-   the PRU's register writes are SILENTLY DROPPED -- no error, the
-   pin just never moves. So the PRU MUST switch the clock on itself
-   before poking the pin. That is the fix added below.
+   WHY poke the GPIO peripheral (and NOT __R30):
+   P9_16 is just a normal GPIO pad. The PRU's private fast pins (__R30)
+   are on other headers (P9_41 etc), not P9_16. To drive P9_16 from the
+   PRU we write the GPIO0 registers directly over the OCP bus.
+
+   GPIO0 register map (base 0x44E07000), same layout as all GPIO banks:
+       OE           0x134   (bit=1 -> input;  bit=0 -> output)
+       CLEARDATAOUT 0x190   (write 1 -> pin LOW)
+       SETDATAOUT   0x194   (write 1 -> pin HIGH)
+   Pin bit for P9_16 / GPIO0_19 = (1u << 19).
+
+   GPIO0 clock lives in the WKUP power domain:
+       CM_WKUP_GPIO0_CLKCTRL = 0x44E00408
+       MODULEMODE bits 0-1 = 2 (enable); IDLEST bits 16-17 = 0 when on.
    ============================================================ */
 
-/* AM335x physical addresses -- from the TRM memory map.
-   Think of these as "house numbers" on the chip's address bus. */
-#define GPIO1_BASE        0x4804C000u   /* GPIO1 block start            */
-#define GPIO_OE           0x134u        /* Output Enable: 0=out, 1=in   */
-#define GPIO_SETDATAOUT   0x194u        /* write 1 => that pin goes HIGH */
-#define GPIO_CLEARDATAOUT 0x190u        /* write 1 => that pin goes LOW  */
-#define P9_16_BIT        (1u << 19)    /* GPIO1_19 is bit 19            */
+#define GPIO0_BASE           0x44E07000u
+#define GPIO_OE              0x134u   /* 1=input, 0=output */
+#define GPIO_CLEARDATAOUT    0x190u   /* write 1 -> LOW  */
+#define GPIO_SETDATAOUT      0x194u   /* write 1 -> HIGH */
+#define SERVO_BIT            (1u << 19)   /* GPIO0_19 = P9_16 */
 
-/* PRU-ICSS config block: we must wake up the OCP bus so the PRU
-   is allowed to touch hardware outside its own little RAM. */
-#define CFG_SYSCFG        0x4A300004u
-#define STANDBY_INIT_BIT  (1u << 4)
+/* Clock enable register for GPIO0 (WKUP domain). */
+#define CM_WKUP_GPIO0_CLKCTRL 0x44E00408u
 
-/* PRCM (Power/Clock manager), CM_PER region. GPIO1 has its own
-   clock gate here. 0x44E00000 = CM_PER base, 0xAC = GPIO1_CLKCTRL.
-   Without enabling this, GPIO1 register writes are dropped. */
-#define CM_PER_GPIO1_CLKCTRL  0x44E000ACu
-#define CM_PER_GPIO1_ENABLE   0x2u       /* MODULEMODE = 2 (enable)      */
-/* IDLEST field is bits [17:16]; 0 means the clock is actually running. */
-
-/* PRU core runs at 200 MHz => 200,000 cycles per millisecond. */
-#define CYCLES_PER_MS     200000u
-#define DELAY_MS(ms)      __delay_cycles((uint32_t)(CYCLES_PER_MS * (ms)))
-
-/* ------------------------------------------------------------
-   prcm_ocp_enable(): do the two "wake up the hardware" steps
-   that Linux normally does for us:
-     1) enable the PRU's OCP master port (so it can reach GPIO1)
-     2) switch ON the GPIO1 functional clock in the PRCM
-   Call this BEFORE touching any GPIO1 register.
-   ------------------------------------------------------------ */
-static inline void prcm_ocp_enable(void) {
-    /* 1) let the PRU talk to the rest of the chip (OCP bus). */
-    (*(volatile uint32_t*)CFG_SYSCFG) &= ~STANDBY_INIT_BIT;
-
-    /* 2) switch ON the GPIO1 clock via the PRCM power manager. */
-    volatile uint32_t *clk = (volatile uint32_t*)CM_PER_GPIO1_CLKCTRL;
-    *clk = CM_PER_GPIO1_ENABLE;                 /* MODULEMODE = enable */
-    /* Wait (bounded) until the clock reports "running" (IDLEST == 0).
-       Bounded so the PRU can't hang forever if something is off. */
-    for (uint32_t t = 0; t < 100000u; t++) {
-        if (((*clk) & (3u << 16)) == 0u) break;
+/* Turn the GPIO0 module clock ON (it can be gated by Linux when idle).
+   Without this, writes to the GPIO0 registers are silently dropped. */
+static void prcm_gpio0_enable(void) {
+    volatile uint32_t *clk = (volatile uint32_t *)CM_WKUP_GPIO0_CLKCTRL;
+    *clk = (2u << 0);                       /* MODULEMODE = 2 (enable) */
+    while (((*clk) & (3u << 16)) != 0u) {   /* wait until IDLEST == 0 */
+        /* bounded by hardware; safe to spin */
     }
 }
 
-/* helper: make P9_16 an OUTPUT (clear bit 19 in the OE register). */
-static inline void p9_16_output(void) {
-    (*(volatile uint32_t*)(GPIO1_BASE + GPIO_OE)) &= ~P9_16_BIT;
+/* PRU cycle cost of one __delay_cycles() call + loop overhead (measured-ish). */
+#define LOOP_OVERHEAD 12u
+
+/* busy-wait for roughly `us` microseconds using the 200 MHz PRU cycle counter.
+   PRU runs at 200 MHz => 200 cycles == 1 us. */
+static void busy_wait_us(uint32_t us) {
+    if (us == 0u) return;
+    uint32_t cycles = (us * 200u) - LOOP_OVERHEAD;
+    __delay_cycles(cycles);
 }
 
-/* helper: one delay chunk -- CONSTANT cycles so __delay_cycles
-   expands to a reliable inline loop on this compiler. */
-#define UNIT_CYCLES   2000u    /* 10 us per chunk (constant -> safe) */
+/* ---------- mode switch (picked at build time via -D on the command line) ---------- */
+#if defined(SERVO_STEADY)
+    /* DIAGNOSTIC: hold a constant 1.5 ms center pulse forever.
+       If THIS moves the servo but the sweep doesn't, the sweep delay-logic
+       is wrong. If this also does nothing, the PRU still isn't reaching the
+       pin (clock / pinmux). */
+    #define PULSE_ON_US   1500u
+    #define PULSE_OFF_US  18500u
+    #define DO_SWEEP     0
+#elif defined(BLINK_TEST)
+    /* DIAGNOSTIC: toggle the pin at ~5 Hz so you can scope/measure it.
+       NOT a servo signal (too slow) — only for pin-reach checks. */
+    #define PULSE_ON_US   100000u
+    #define PULSE_OFF_US  100000u
+    #define DO_SWEEP     0
+#else
+    /* PROJECT MODE: real 50 Hz servo sweep, 1.0 ms -> 2.0 ms over ~6 s. */
+    #define PERIOD_US    20000u   /* 20 ms = 50 Hz */
+    #define PW_MIN_US    1000u    /* 1.0 ms -> one end */
+    #define PW_MAX_US    2000u    /* 2.0 ms -> other end */
+    #define STEP_COUNT   300u     /* 300 cycles * 20 ms = 6 s sweep */
+    #define DO_SWEEP     1
+#endif
 
-void main(void){
-#ifdef BLINK_TEST
-    /* ---- 5 Hz toggle, only to prove the pin can flip --------------- */
-    prcm_ocp_enable();
-    p9_16_output();
-    int i;
-    for (i = 0; i < 10; i++){
-        (*(volatile uint32_t*)(GPIO1_BASE + GPIO_SETDATAOUT))   = P9_16_BIT;
-        DELAY_MS(100);
-        (*(volatile uint32_t*)(GPIO1_BASE + GPIO_CLEARDATAOUT)) = P9_16_BIT;
-        DELAY_MS(100);
-    }
-#elif defined(SERVO_STEADY)
-    /* ============================================================
-       DIAGNOSTIC: hold a STEADY 1.5 ms center pulse forever.
-       Constant delays only -> timing is rock solid.
-       WHY: if THIS moves the servo but the sweep doesn't, the
-       bug is in the sweep's variable-count delay logic. If THIS
-       ALSO does nothing, the PRU's writes aren't reaching the
-       pin at all (clock/pinmux) and we move the diagnostic to
-       the Linux side.
-       ============================================================ */
-    prcm_ocp_enable();
-    p9_16_output();
+void main(void) {
+    /* 1) Make sure the GPIO0 module clock is running. */
+    prcm_gpio0_enable();
+
+    /* 2) Configure P9_16 (GPIO0_19) as an OUTPUT.
+       We CLEAR the OE bit. Any 1s already set elsewhere are untouched. */
+    volatile uint32_t *oe = (volatile uint32_t *)(GPIO0_BASE + GPIO_OE);
+    *oe = (*oe) & ~SERVO_BIT;
+
+    volatile uint32_t *set = (volatile uint32_t *)(GPIO0_BASE + GPIO_SETDATAOUT);
+    volatile uint32_t *clr = (volatile uint32_t *)(GPIO0_BASE + GPIO_CLEARDATAOUT);
+
+#if DO_SWEEP
+    /* ---- real servo sweep ---- */
     for (;;) {
-        (*(volatile uint32_t*)(GPIO1_BASE + GPIO_SETDATAOUT))   = P9_16_BIT;  /* HIGH */
-        for (uint32_t k = 0; k < 150u; k++) __delay_cycles(UNIT_CYCLES);       /* 1.5 ms */
-        (*(volatile uint32_t*)(GPIO1_BASE + GPIO_CLEARDATAOUT)) = P9_16_BIT;   /* LOW  */
-        for (uint32_t k = 0; k < 1850u; k++) __delay_cycles(UNIT_CYCLES);      /* 18.5 ms -> 50 Hz */
+        for (uint32_t i = 0; i < STEP_COUNT; i++) {
+            uint32_t pw = PW_MIN_US
+                        + ((PW_MAX_US - PW_MIN_US) * i) / (STEP_COUNT - 1u);
+            /* pulse HIGH for pw microseconds */
+            *set = SERVO_BIT;
+            busy_wait_us(pw);
+            /* pulse LOW for the rest of the 20 ms period */
+            *clr = SERVO_BIT;
+            busy_wait_us(PERIOD_US - pw);
+        }
+        /* (optional) reverse direction could go here; sweep end-to-end is fine */
     }
 #else
-    /* ============================================================
-       REAL PRU SERVO CONTROL  (this IS the project goal!)
-       ------------------------------------------------------------
-       Make the PRU emit the exact 50 Hz PWM the gpiod test used to
-       move your servo. No Linux, no gpiod -- the PRU flips P9_16
-       all by itself, with rock-steady timing.
-
-       Hold two facts in your head:
-         * PRU core clock = 200 MHz  =>  200,000 cycles = 1 ms.
-         * Servo wants 50 Hz => one period = 20 ms. Inside each
-           20 ms we hold HIGH for 1.0..2.0 ms (the "pulse") and
-           LOW for the rest. Pulse width = servo position.
-
-       IMPORTANT: on this compiler __delay_cycles(N) needs a
-       CONSTANT N. So we build every delay from many identical
-       10 us (2000-cycle) chunks and vary only HOW MANY chunks
-       we loop -- never the chunk size.
-       ============================================================ */
-
-    #define PERIOD_UNITS  2000u    /* 2000 chunks = 20 ms => 50 Hz       */
-    /* pulse spans 100..200 chunks == 1.0 ms .. 2.0 ms */
-
-    prcm_ocp_enable();
-    p9_16_output();
-
+    /* ---- diagnostic steady / blink (constant pulse) ---- */
     for (;;) {
-        /* sweep UP: pulse 1.0ms -> 2.0ms */
-        for (uint32_t s = 0; s <= 100u; s++) {
-            uint32_t pulse = 100u + s;             /* 100..200 chunks */
-            uint32_t gap   = PERIOD_UNITS - pulse; /* 1900..1800 */
-            (*(volatile uint32_t*)(GPIO1_BASE + GPIO_SETDATAOUT))   = P9_16_BIT;
-            for (uint32_t k = 0; k < pulse; k++) __delay_cycles(UNIT_CYCLES);
-            (*(volatile uint32_t*)(GPIO1_BASE + GPIO_CLEARDATAOUT)) = P9_16_BIT;
-            for (uint32_t k = 0; k < gap;   k++) __delay_cycles(UNIT_CYCLES);
-        }
-        /* sweep DOWN: pulse 2.0ms -> 1.0ms */
-        for (uint32_t s = 0; s <= 100u; s++) {
-            uint32_t pulse = 200u - s;             /* 200..100 chunks */
-            uint32_t gap   = PERIOD_UNITS - pulse;
-            (*(volatile uint32_t*)(GPIO1_BASE + GPIO_SETDATAOUT))   = P9_16_BIT;
-            for (uint32_t k = 0; k < pulse; k++) __delay_cycles(UNIT_CYCLES);
-            (*(volatile uint32_t*)(GPIO1_BASE + GPIO_CLEARDATAOUT)) = P9_16_BIT;
-            for (uint32_t k = 0; k < gap;   k++) __delay_cycles(UNIT_CYCLES);
-        }
+        *set = SERVO_BIT;
+        busy_wait_us(PULSE_ON_US);
+        *clr = SERVO_BIT;
+        busy_wait_us(PULSE_OFF_US);
     }
 #endif
-    __halt();
 }
+
+/* never reached, but keeps the toolchain happy */
+__halt();
