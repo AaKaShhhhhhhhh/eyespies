@@ -57,3 +57,5 @@ clean:
 	rm -f *.out gpio_hold gpio_read
 
 .PHONY: all clean
+
+CFLAGS += -I/usr/lib/ti/pru-software-support-package-v6.3/include/am335x
