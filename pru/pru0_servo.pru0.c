@@ -46,15 +46,18 @@ static void prcm_gpio0_enable(void) {
     }
 }
 
-/* PRU cycle cost of one __delay_cycles() call + loop overhead (measured-ish). */
-#define LOOP_OVERHEAD 12u
+/* PRU's __delay_cycles() REQUIRES a compile-time CONSTANT argument - you cannot
+   pass a variable. So we wait in fixed 10us chunks (constant __delay_cycles(2000)),
+   looping a variable number of times. Sub-10us remainder is dropped (max 0.9% error). */
+#define US_PER_CHUNK      10u
+#define CYCLES_PER_CHUNK  (US_PER_CHUNK * 200u)   /* 2000 cycles = 10us @ 200 MHz */
 
-/* busy-wait for roughly `us` microseconds using the 200 MHz PRU cycle counter.
-   PRU runs at 200 MHz => 200 cycles == 1 us. */
+/* busy-wait for roughly `us` microseconds using the 200 MHz PRU cycle counter. */
 static void busy_wait_us(uint32_t us) {
-    if (us == 0u) return;
-    uint32_t cycles = (us * 200u) - LOOP_OVERHEAD;
-    __delay_cycles(cycles);
+    uint32_t chunks = us / US_PER_CHUNK;
+    while (chunks--) {
+        __delay_cycles(CYCLES_PER_CHUNK);
+    }
 }
 
 /* ---------- mode switch (picked at build time via -D on the command line) ---------- */
