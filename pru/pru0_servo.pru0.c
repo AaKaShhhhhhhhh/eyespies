@@ -91,7 +91,15 @@ void main(void)
      * but we repeat it so the PRU is not dependent on that). */
     HWREG(GPIO0_BASE + GPIO_OE) &= ~SERVO_BIT;
 
-#ifdef SERVO_STEADY
+#ifdef HOLD_HIGH
+    /* DECISIVE TEST: drive the pin HIGH and park it. Then read the live pad
+     * level from Linux with `gpioget gpiochip0 19`.
+     *   -> reads 1 : the PRU's OCP write REACHED the pad (bus works)
+     *   -> reads 0 : the PRU's write is NOT reaching the pad (bus/mux bug)
+     * We keep spinning so the core never halts (belt & suspenders). */
+    HWREG(GPIO0_BASE + GPIO_SETDATA) = SERVO_BIT;
+    while (1) __delay_cycles(CYCLES_PER_CHUNK);
+#elif defined(SERVO_STEADY)
     /* Constant 1.5 ms center pulse forever -- simplest "is it alive?" test. */
     while (1)
         send_pulse(PULSE_CENTER_US);

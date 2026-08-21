@@ -32,6 +32,11 @@ pru0_servo.out: pru0_servo.pru0.c resource_table_empty.h
 servo_steady.out: pru0_servo.pru0.c resource_table_empty.h
 	pru-gcc -O2 -Wall -DSERVO_STEADY -mmcu=am335x.pru0 -o $@ $<
 
+# DECISIVE TEST: drive the pin HIGH and park it. Read the live pad level from
+# Linux with `gpioget gpiochip0 19`. 1 = PRU bus works; 0 = bus/mux bug.
+hold_high.out: pru0_servo.pru0.c resource_table_empty.h
+	pru-gcc -O2 -Wall -DHOLD_HIGH -mmcu=am335x.pru0 -o $@ $<
+
 # Blink test -- 5 Hz GPIO toggle (define BLINK_TEST) for isolating the pin.
 blink.out: pru0_servo.pru0.c resource_table_empty.h
 	pru-gcc -O2 -Wall -DBLINK_TEST -mmcu=am335x.pru0 -o $@ $<
