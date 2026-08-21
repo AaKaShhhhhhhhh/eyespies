@@ -22,7 +22,7 @@
 #   blink.out        -> 5 Hz toggle, for isolating the pin
 #   gpio_hold        -> Linux helper that holds gpiochip0 line 19 so the PRU
 #                       writes actually reach the pad
-all: pru0_servo.out servo_steady.out blink.out gpio_hold
+all: pru0_servo.out servo_steady.out hold_high.out blink.out gpio_hold gpio_read
 
 # Real servo firmware -- PRU emits 50 Hz PWM sweep on GPIO0_19.
 pru0_servo.out: pru0_servo.pru0.c resource_table_empty.h
@@ -32,8 +32,9 @@ pru0_servo.out: pru0_servo.pru0.c resource_table_empty.h
 servo_steady.out: pru0_servo.pru0.c resource_table_empty.h
 	pru-gcc -O2 -Wall -DSERVO_STEADY -mmcu=am335x.pru0 -o $@ $<
 
-# DECISIVE TEST: drive the pin HIGH and park it. Read the live pad level from
-# Linux with `gpioget gpiochip0 19`. 1 = PRU bus works; 0 = bus/mux bug.
+# DECISIVE TEST: drive the pin HIGH and park it. Read the live register from
+# Linux with `sudo ./gpio_read` (mmap of GPIO0 DATAOUT). 1 = PRU bus works;
+# 0 = bus/mux bug.
 hold_high.out: pru0_servo.pru0.c resource_table_empty.h
 	pru-gcc -O2 -Wall -DHOLD_HIGH -mmcu=am335x.pru0 -o $@ $<
 
@@ -46,7 +47,13 @@ blink.out: pru0_servo.pru0.c resource_table_empty.h
 gpio_hold: gpio_hold.c
 	gcc -O2 -Wall -o $@ $< -lgpiod
 
+# Linux helper: read the ACTUAL GPIO0 DATAOUT register via /dev/mem mmap.
+# Does NOT request the line, so it works while gpio_hold owns it (no "busy").
+# Use with hold_high.out to prove whether the PRU's write reached the register.
+gpio_read: gpio_read.c
+	gcc -O2 -Wall -o $@ $<
+
 clean:
-	rm -f *.out gpio_hold
+	rm -f *.out gpio_hold gpio_read
 
 .PHONY: all clean

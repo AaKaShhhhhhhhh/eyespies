@@ -92,10 +92,10 @@ void main(void)
     HWREG(GPIO0_BASE + GPIO_OE) &= ~SERVO_BIT;
 
 #ifdef HOLD_HIGH
-    /* DECISIVE TEST: drive the pin HIGH and park it. Then read the live pad
-     * level from Linux with `gpioget gpiochip0 19`.
-     *   -> reads 1 : the PRU's OCP write REACHED the pad (bus works)
-     *   -> reads 0 : the PRU's write is NOT reaching the pad (bus/mux bug)
+    /* DECISIVE TEST: drive the pin HIGH and park it. Then read the live
+     * register from Linux with `sudo ./gpio_read` (mmap of GPIO0 DATAOUT).
+     *   -> bit19=1 : the PRU's OCP write REACHED the register (bus works)
+     *   -> bit19=0 : the PRU's write is NOT reaching the register (bus/mux bug)
      * We keep spinning so the core never halts (belt & suspenders). */
     HWREG(GPIO0_BASE + GPIO_SETDATA) = SERVO_BIT;
     while (1) __delay_cycles(CYCLES_PER_CHUNK);
