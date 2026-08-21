@@ -20,14 +20,20 @@
  */
 #include <stdint.h>
 
-/* Trick the TI header into thinking it's already declared its CT_CFG line */
-#define __PRU_CFG_H__
-#include <pru_cfg.h>
+/* REMOVED: #include <pru_cfg.h> because it is built for TI clpru, not pru-gcc */
+/* Instead, we explicitly define the structure your code needs locally */
+typedef struct {
+    volatile uint32_t REVID;
+    volatile uint32_t SYSCFG;
+    volatile uint32_t GPCFG0;
+    volatile uint32_t GPCFG1;
+} pruCfg;
 
 /* Map CT_CFG safely to its absolute physical register space for pru-gcc */
 #define CT_CFG (*(volatile pruCfg *)0x00026000)
 
 #include "resource_table_empty.h"
+
 
 /* --- GPIO0 register map (AM335x TRM) --- */
 
