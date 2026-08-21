@@ -19,6 +19,12 @@
  * ---------------------------------------------------------------------------
  */
 #include <stdint.h>
+#ifndef __GNUC__
+#else
+  #define __far
+  #define cregister
+  #define near
+#endif
 #include <pru_cfg.h>
 #include "resource_table_empty.h"
 
