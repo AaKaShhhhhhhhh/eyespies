@@ -51,7 +51,9 @@ typedef struct {
 #define CM_WKUP_GPIO0_CLKCTRL  0x08u   /* MODULEMODE field, bits 0-1 */
 
 /* --- PRU local config: clear STANDBY_INIT so OCP writes reach the bus --- */
-#define PRU_CFG_SYSCFG  0x00026004u   /* SYSCFG; bit 4 = STANDBY_INIT */
+/* CHANGE THIS: Use the internal local port address for the PRU core */
+#define PRU_CFG_SYSCFG  0x00000004u   /* Local PRU address for SYSCFG */
+  /* SYSCFG; bit 4 = STANDBY_INIT */
 
 /* --- timing --- */
 #define PRU_FREQ_MHZ      200u
