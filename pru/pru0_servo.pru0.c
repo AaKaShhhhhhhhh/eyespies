@@ -19,14 +19,18 @@
  * ---------------------------------------------------------------------------
  */
 #include <stdint.h>
-#ifndef __GNUC__
-#else
-  #define __far
-  #define cregister
-  #define near
-#endif
+
+/* Trick the TI header into thinking it's already declared its CT_CFG line */
+#define __PRU_CFG_H__
 #include <pru_cfg.h>
+
+/* Map CT_CFG safely to its absolute physical register space for pru-gcc */
+#define CT_CFG (*(volatile pruCfg *)0x00026000)
+
 #include "resource_table_empty.h"
+
+/* --- GPIO0 register map (AM335x TRM) --- */
+
 
 /* --- GPIO0 register map (AM335x TRM) --- */
 #define GPIO0_BASE     0x44E07000u
