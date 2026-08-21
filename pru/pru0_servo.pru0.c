@@ -36,13 +36,20 @@
 /* Clock enable register for GPIO0 (WKUP domain). */
 #define CM_WKUP_GPIO0_CLKCTRL 0x44E00408u
 
+/* PRU0 CFG.SYSCFG register, at the PRU's LOCAL address 0x00026004.
+   STANDBY_INIT (bit 4) gates the PRU's OCP master port:
+     1 (reset default) -> OCP in standby -> every write to GPIO/PRCM is DROPPED.
+     0                 -> OCP live       -> PRU can reach external peripherals.
+   This is THE classic "PRU runs but GPIO won't move" trap. Clear it first. */
+#define PRU_CFG_SYSCFG  (*(volatile uint32_t *)0x00026004u)
+
 /* Turn the GPIO0 module clock ON (it can be gated by Linux when idle).
    Without this, writes to the GPIO0 registers are silently dropped. */
 static void prcm_gpio0_enable(void) {
     volatile uint32_t *clk = (volatile uint32_t *)CM_WKUP_GPIO0_CLKCTRL;
     *clk = (2u << 0);                       /* MODULEMODE = 2 (enable) */
-    while (((*clk) & (3u << 16)) != 0u) {   /* wait until IDLEST == 0 */
-        /* bounded by hardware; safe to spin */
+    for (volatile uint32_t t = 0u; t < 1000000u; t++) {  /* bounded wait */
+        if (((*clk) & (3u << 16)) == 0u) break; /* IDLEST == 0 => clock on */
     }
 }
 
@@ -85,6 +92,11 @@ static void busy_wait_us(uint32_t us) {
 #endif
 
 void main(void) {
+    /* 0) WAKE THE PRU's OCP BUS. Clear SYSCFG.STANDBY_INIT (bit 4) so the
+          PRU can actually reach external peripherals (GPIO/PRCM). Without
+          this the PRU "runs" but every write to 0x44E00000+ is dropped. */
+    PRU_CFG_SYSCFG &= ~(1u << 4);
+
     /* 1) Make sure the GPIO0 module clock is running. */
     prcm_gpio0_enable();
 
