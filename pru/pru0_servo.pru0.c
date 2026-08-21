@@ -46,9 +46,54 @@ void main(void){
         DELAY_MS(100);
     }
 #else
-    /* PHASE 2: real servo sweep. We will write this together next.
-       For now just halt so the non-blink build still compiles. */
-    __halt();
+    /* ============================================================
+       REAL PRU SERVO CONTROL  (this IS the project goal!)
+       ------------------------------------------------------------
+       Make the PRU emit the exact 50 Hz PWM the gpiod test used to
+       move your servo. No Linux, no gpiod -- the PRU flips P9_16
+       all by itself, with rock-steady timing.
+
+       Hold two facts in your head:
+         * PRU core clock = 200 MHz  =>  200,000 cycles = 1 ms.
+         * Servo wants 50 Hz => one period = 20 ms. Inside each
+           20 ms we hold HIGH for 1.0..2.0 ms (the "pulse") and
+           LOW for the rest. Pulse width = servo position.
+
+       IMPORTANT: on this compiler __delay_cycles(N) needs a
+       CONSTANT N. So we build every delay from many identical
+       10 us (2000-cycle) chunks and vary only HOW MANY chunks
+       we loop -- never the chunk size.
+       ============================================================ */
+
+    #define UNIT_CYCLES   2000u    /* 10 us per chunk (constant -> safe) */
+    #define PERIOD_UNITS  2000u    /* 2000 chunks = 20 ms => 50 Hz       */
+    /* pulse spans 100..200 chunks == 1.0 ms .. 2.0 ms */
+
+    /* 1) wake the OCP bus so the PRU may touch GPIO1. */
+    (*(volatile uint32_t*)CFG_SYSCFG) &= ~STANDBY_INIT_BIT;
+    /* 2) make P9_16 an OUTPUT. */
+    (*(volatile uint32_t*)(GPIO1_BASE + GPIO_OE)) &= ~P9_16_BIT;
+
+    for (;;) {
+        /* sweep UP: pulse 1.0ms -> 2.0ms */
+        for (uint32_t s = 0; s <= 100u; s++) {
+            uint32_t pulse = 100u + s;             /* 100..200 chunks */
+            uint32_t gap   = PERIOD_UNITS - pulse; /* 1900..1800 */
+            (*(volatile uint32_t*)(GPIO1_BASE + GPIO_SETDATAOUT))   = P9_16_BIT;
+            for (uint32_t k = 0; k < pulse; k++) __delay_cycles(UNIT_CYCLES);
+            (*(volatile uint32_t*)(GPIO1_BASE + GPIO_CLEARDATAOUT)) = P9_16_BIT;
+            for (uint32_t k = 0; k < gap;   k++) __delay_cycles(UNIT_CYCLES);
+        }
+        /* sweep DOWN: pulse 2.0ms -> 1.0ms */
+        for (uint32_t s = 0; s <= 100u; s++) {
+            uint32_t pulse = 200u - s;             /* 200..100 chunks */
+            uint32_t gap   = PERIOD_UNITS - pulse;
+            (*(volatile uint32_t*)(GPIO1_BASE + GPIO_SETDATAOUT))   = P9_16_BIT;
+            for (uint32_t k = 0; k < pulse; k++) __delay_cycles(UNIT_CYCLES);
+            (*(volatile uint32_t*)(GPIO1_BASE + GPIO_CLEARDATAOUT)) = P9_16_BIT;
+            for (uint32_t k = 0; k < gap;   k++) __delay_cycles(UNIT_CYCLES);
+        }
+    }
 #endif
     __halt();
 }
