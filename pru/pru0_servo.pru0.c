@@ -23,7 +23,7 @@
 
 volatile register uint32_t __R30;
 
-#define SERVO_BIT_PIN (1U << 15);
+#define SERVO_BIT_PIN (1U << 1);
 
 /* Timing configs */
 #define CYCLES_PER_CHUNK  2000u        /* 10 us chunk at 200MHz */
