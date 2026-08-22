@@ -21,7 +21,9 @@
 
 #include <stdint.h>
 
-volatile register uint32_t __R30;
+volatile register uint32_t __R30 __asm__("r30");
+
+
 
 #define SERVO_BIT_PIN (1U << 1);
 
