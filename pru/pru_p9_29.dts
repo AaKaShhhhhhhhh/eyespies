@@ -1,0 +1,54 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * pru_p9_29.dts  --  mux header pin P9_29 to PRU0 (mode 4) so a PRU0 firmware
+ * can drive it via r30.1.
+ *
+ * HARD-WON FACTS (see PRU_SERVO_DEBUG_LOG.md):
+ *   - On this 6.x BeagleBone image, config-pin, devmem, PRU OCP writes to the
+ *     Control Module, and ARM /dev/mem writes to the Control Module are ALL
+ *     blocked (CONFIG_STRICT_DEVMEM / pinctrl ownership). The ONLY way to set
+ *     the pad mux is a device-tree overlay with kernel authority.
+ *   - P9_29 = ball R28 = gpmc_csn3 = GPIO3_21 = gpiochip3 line 21 = pin 111.
+ *     Its conf register is at Control-Module offset 0x9BC (phys 0x44E109BC).
+ *     (Confirmed from: `sudo grep 9bc /sys/kernel/debug/pinctrl/.../pins`
+ *      -> "pin 111 (44e109bc)").
+ *   - P9_29 is reached by PRU0's r30.1 in MODE 4. (Mode 5 = PRU1 r30.1, which
+ *     is a DIFFERENT ball on P8, so mode 5 would NOT move P9_29.)
+ *
+ * Conf register value 0x24:
+ *   bits [2:0] = 0b100 = mode 4  (PRU0_r30_1 output)
+ *   bits [4:3] = 0b10  = pull-up enabled
+ *   bit  18    = 0      = input buffer (rxactive) OFF (output-only is fine)
+ *
+ * The PRU firmware (pru1_servo.pru1.c) does NOT touch the mux -- it relies on
+ * this overlay to put the pad in mode 4, then it just drives r30.1.
+ */
+
+/ {
+    compatible = "ti,am335x-bone-black", "ti,am335x-bone";
+
+    fragment@0 {
+        target = <&am33xx_pinmux>;
+        __overlay__ {
+            pru_p9_29_pins: pinmux_pru_p9_29_pins {
+                pinctrl-single,pins = <
+                    0x9bc 0x24  /* P9_29 (gpmc_csn3) -> Mode 4 (PRU0 r30.1), pull-up */
+                >;
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&ocp>;
+        __overlay__ {
+            pru_pin_helper {
+                compatible = "bone-pinmux-helper";
+                pinctrl-names = "default";
+                pinctrl-0 = <&pru_p9_29_pins>;
+                status = "okay";
+            };
+        };
+    };
+};

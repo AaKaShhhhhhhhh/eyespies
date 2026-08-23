@@ -448,3 +448,54 @@ re-asserts GPIO after our `/dev/mem` write.
     then reboot; OR `sudo sh -c 'echo pru_p9_29 > /sys/devices/platform/bone_capemgr/slots'`
     (slot path varies on 6.x; may be `/sys/kernel/debug/...` or `configfs`).
   - Verify with the same pinctrl grep expecting `...00000024`.
+
+### SESSION 2026-08-24 (board #5) — pin owner = nobody; overlay was WRONG; corrected
+- User paste (on board):
+  ```bash
+  sudo cat /sys/kernel/debug/gpio | grep -i 117   # (empty)
+  gpioinfo gpiochip3 | grep -i 21                 # line 21: "[rmii1_txd1]" unused input active-high
+  cat pru_p9_29.dts                               # existing overlay shown
+  ```
+- Decode:
+  - **Pin owner = NOBODY.** `gpioinfo` says `unused`; `debugfs gpio` grep 117
+    empty. So the pad is NOT held by a GPIO driver. The "kernel driver reclaims
+    GPIO" theory (board #4) was WRONG — the pad just sits in mode 0 (base-DT
+    default), and `/dev/mem` failed because **CONFIG_STRICT_DEVMEM** blocks
+    userspace writes to the Control Module region. (Same story for PRU OCP.)
+  - **Existing `pru_p9_29.dts` is WRONG**, on two counts:
+    - offset `0x194` (wrong ball; P9_29 conf is `0x44E109BC` = offset `0x9BC`).
+    - mode `0x05` (PRU1 r30.1), but firmware is PRU0 driving r30.1 = mode 4.
+- Action taken (on dev host, this turn):
+  - Rewrote `pru/pru_p9_29.dts` with **offset 0x9bc, value 0x24 (mode 4)** and
+    a `bone-pinmux-helper` node. This is the corrected overlay.
+  - Added `pru_p9_29.dtbo:` target to `Makefile` (`dtc -O dtb -o ... -b 0 -@`).
+  - Fixed all stale Makefile comments that still claimed "PRU self-muxes over
+    OCP" / "no overlay needed" / "config-pin/devmem/DT unavailable". Reality:
+    overlay is the ONLY working mux path; load it FIRST.
+- Why mode 4 (not 5): P9_29 reaches PRU0 r30.1 only in mode 4. Mode 5 routes
+  PRU1 r30.1 — but that ball is on P8, so mode 5 would leave P9_29 unmoved.
+- Remaining (on board): build + load the corrected overlay, verify mux, then
+  load firmware + pulse.
+  ```bash
+  cd ~/eyespies/pru
+  sudo apt-get install -y device-tree-compiler        # if dtc missing
+  make pru_p9_29.dtbo                                 # build corrected overlay
+  # load it (one of):
+  sudo cp pru_p9_29.dtbo /lib/firmware/               # then uEnv.txt cape_enable
+  sudo sh -c 'echo pru_p9_29 > /sys/devices/platform/bone_capemgr/slots'   # if slot dir exists
+  # verify:
+  sudo grep 9bc /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins
+  #   expect: 44e109bc 00000024
+  # then run the servo path:
+  sudo ./load_pru0.sh pru1_servo.pru1.out
+  sudo ./arm_write_p929 1500
+  ```
+- Note (the `arm_write_p929` CM write is now redundant — the overlay does the
+  mux). The helper still prints `MUX OK` (0x24) / `MUX BLOCKED` (0x28) so you
+  can confirm the overlay took effect. The pulse write to shared RAM still
+  works (it did before).
+- Status: **overlay corrected + build target added. UNVERIFIED on board.**
+- New unknowns: exact overlay-load mechanism on this 6.x image (slot path vs
+  uEnv.txt `cape_enable` vs configfs); whether `dtc` is installed; whether the
+  `bone-pinmux-helper` compatible still exists on 6.x (some images dropped it —
+  if the helper node fails, the fragment@0 alone may still apply the pinctrl).
