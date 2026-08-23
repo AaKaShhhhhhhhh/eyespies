@@ -34,19 +34,22 @@
 #define PRU_SHARED_RAM   0x4A310000u   /* 12KB shared with ARM -> mailbox    */
 
 /* Control Module (pinmux) base + P9_29 (ball R28) conf register offset.
-   From the BeagleBone SRM / Derek Molloy pin table for the PRU cape pins:
-     P9_28 = gpmc_ben1  -> conf 0x99C
-     P9_29 = gpmc_csn3  -> conf 0x9A0   <-- P9_29
-     P9_30 = gpmc_csn2  -> conf 0x9A4
-     P9_31 = gpmc_csn1  -> conf 0x9A8
-   So P9_29 conf register = 0x44E109A0.  *** IF P9_29 still does not move
-   after loading, this single number is the most likely culprit (off-by-one
-   with P9_30 @ 0x9A4) — change it and rebuild. Verify on the board with:
-     sudo cat /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins | grep -i '9a0\|9a4'
-   and confirm which offset currently shows P9_29's GPIO-mode default. */
+   IMPORTANT — learned from the board's own pinctrl dump on 2026-08-23:
+     pin 104  18:gpio-64-95  44e109a0  00000027   <- GPIO2_18 (NOT P9_29)
+     pin 105  19:gpio-64-95  44e109a4  00000027   <- GPIO2_19 (NOT P9_29)
+   So 0x9A0/0x9A4 are GPIO2 pins. P9_29 is GPIO3, so its conf offset is
+   elsewhere. Leading candidate: ball R28's primary signal is gpmc_csn3, whose
+   conf register is 0x44E1086C. To be safe, the firmware reads the offset from
+   PRU shared RAM word 1 (see arm_write_p929's optional 2nd arg); if zero it
+   uses DEFAULT_CONF_OFF below. This lets you try offsets WITHOUT recompiling:
+     sudo ./arm_write_p929 1500 0x86c   # then reload the firmware
+   Confirm the true offset on the board with:
+     LINE=$(gpioinfo gpiochip3 | awk '/[Pp]9_29/{print $2}' | tr -d ':')
+     grep "${LINE}:gpio-96-127" /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins
+   The printed 44e108xx is P9_29's conf register. */
 #define CONTROL_MODULE_BASE 0x44E10000u
-#define CONF_P9_29_OFF      0x9A0u
-#define CONF_P9_29          (CONTROL_MODULE_BASE + CONF_P9_29_OFF)
+#define DEFAULT_CONF_OFF    0x86Cu   /* CANDIDATE (gpmc_csn3 / ball R28). Verify. */
+#define CONF_P9_29          (CONTROL_MODULE_BASE + DEFAULT_CONF_OFF)
 
 #define SERVO_BIT  (1u << 1)   /* r30.1 -> P9_29 on PRU0 (once muxed to mode 4) */
 
@@ -88,12 +91,14 @@ int main(void)
     /* ARM writes the desired pulse width (microseconds) into shared[0].
        1000 us = one extreme, 1500 us = center, 2000 us = other extreme. */
     volatile uint32_t *shared = (volatile uint32_t *)PRU_SHARED_RAM;
-    volatile uint32_t *conf_p929 = (volatile uint32_t *)CONF_P9_29;
     uint32_t pulse_us;
 
-    /* 1) Reprogram P9_29 to PRU0 direct-output mode (mode 4), pull-up/down
-       disabled, fast slew. bits[2:0]=4, bit5=1 (pulldisable), bit6=1 (fast).
-       Value 0x24. This is what makes r30.1 actually reach the pad. */
+    /* 1) Reprogram P9_29 to PRU0 direct-output mode (mode 4), keep the
+       pull-up like the default (0x27) but switch mode bits to 4 -> 0x24.
+       The conf offset comes from shared RAM word 1 if set, else the default.
+       This is what makes r30.1 actually reach the pad. */
+    uint32_t conf_off = shared[1] ? shared[1] : DEFAULT_CONF_OFF;
+    volatile uint32_t *conf_p929 = (volatile uint32_t *)(CONTROL_MODULE_BASE + conf_off);
     *conf_p929 = 0x24u;
 
     /* 2) Clear STANDBY_INIT in SYSCFG so the PRU's r30 outputs are NOT

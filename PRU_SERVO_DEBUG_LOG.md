@@ -105,47 +105,66 @@ hence the reboot.
   "worked briefly then wouldn't stop" referred to — a userspace process, not
   the PRU. Good as a *decoupling* test for P9_29 if we mux it to GPIO.
 
-### E. This session — corrected firmware `pru1_servo.pru1.c` (PRU0, self-mux)
-- Approach: firmware (a) writes `0x24` to conf `0x44E109A0` (mode 4), (b)
+### E. This session (pre-board) — corrected firmware `pru1_servo.pru1.c` (PRU0, self-mux)
+- Approach: firmware (a) writes `0x24` to conf offset (was `0x9A0`), (b)
   clears `STANDBY_INIT` (PRU0 CFG `0x4A322004` bit 4), (c) drives `r30.1`.
-- Status: **UNVERIFIED.** Cannot build on this host (no `pru-gcc`, no BBB
-  attached). Host-side siblings (`arm_write_p929.c`, `load_pru.sh`,
-  `gpio_hold.c`, `Makefile`) pass syntax/parse checks; the firmware itself is
-  **not compiled or flashed**.
-- Files written/changed this session:
-  - `pru/pru1_servo.pru1.c` (rewritten 3×: GPIO3-OCP → r30-bypass → r30 self-mux)
-  - `pru/arm_write_p929.c` (new — writes pulse width into PRU shared RAM)
-  - `pru/load_pru.sh` (new — auto-detects remoteproc by `/name`, no config-pin)
-  - `pru/gpio_hold.c` (generic — hold any chip/line; default P9_16)
-  - `pru/Makefile` (updated targets + notes)
-  - `PRU_GUIDE.md` (Phase 8 + cheat sheet corrected)
+- Status: **FAIL due to WRONG CONF OFFSET** (see session 2026-08-23 below).
+  `0x9A0`/`0x9A4` are GPIO2 pins, not P9_29 (GPIO3). Firmware itself was not
+  even built on the board because the new `pru/` files were never copied there
+  — only the old repo was present.
+
+### F. Session 2026-08-23 — board evidence + fix
+- Evidence from the board's pinctrl dump:
+  ```
+  pin 104  18:gpio-64-95  44e109a0  00000027   <- GPIO2_18 (NOT P9_29)
+  pin 105  19:gpio-64-95  44e109a4  00000027   <- GPIO2_19 (NOT P9_29)
+  ```
+  Confirms P9_29 (GPIO3, gpiochip3 = `gpio-96-127`) is at a DIFFERENT offset.
+  **`0x9A0`/`0x9A4` were wrong** (that was my Derek-Molloy table recollection
+  error).  Also: user's commands failed because `cd pru` ran from inside
+  `~/eyespies/pru` (already there) — chained `&&` short-circuited, so `make`
+  never ran and `load_pru.sh`/`arm_write_p929` were absent on the board.
+- Fix applied (on the Mac; must be re-synced to the board):
+  - `pru1_servo.pru1.c`: conf offset now overridable via shared RAM word 1
+    (ARM writes it with `arm_write_p929 <us> <offset>`), default candidate
+    `0x86C` (gpmc_csn3 / ball R28). No recompile needed to try offsets.
+  - `arm_write_p929.c`: accepts optional 2nd arg = conf offset (hex).
+- Status: **UNVERIFIED on board** (files not yet copied to the BBB; offset
+  still a candidate). Must run the "find true offset" step next.
 
 ---
 
 ## 4. WHAT WE CAN TRY NEXT (priority order)
 
-1. **Build & load the corrected firmware on the BBB:**
+1. **Find P9_29's TRUE conf offset on the board (do this FIRST, no rebuild):**
    ```bash
-   cd pru && make pru1_servo.pru1.out arm_write_p929
+   LINE=$(gpioinfo gpiochip3 | awk '/[Pp]9_29/{print $2}' | tr -d ':')
+   grep "${LINE}:gpio-96-127" /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins
+   ```
+   The printed `44e108xx` is P9_29's conf register. That replaces the guess.
+   (If `gpioinfo` line name isn't `P9_29`, list with `gpioinfo gpiochip3` and
+   eyeball which line is the P9_29 pin.)
+2. **Sync the updated `pru/` files to the BBB** (scp or git pull). The board
+   only has the OLD repo — that's why `make`/`load_pru.sh` were missing.
+3. **Build & load on the BBB** (from inside `~/eyespies/pru`, no extra `cd`):
+   ```bash
+   make pru1_servo.pru1.out arm_write_p929
    sudo ./load_pru.sh pru0 pru1_servo.pru1.out
-   sudo ./arm_write_p929 1500          # servo should center
+   sudo ./arm_write_p929 1500 <OFFSET_FROM_STEP1>   # e.g. 0x86c
    ```
-2. **If P9_29 stays dead → flip the conf offset.** Edit `CONF_P9_29_OFF` in
-   `pru1_servo.pru1.c` from `0x9A0` to `0x9A4` (or vice-versa), rebuild, reload.
-   This is the #1 suspected culprit.
-3. **Confirm the mux actually changed** (if pinctrl debugfs exists):
+4. **If it still doesn't move**, try adjacent offsets (0x860..0x8xx range,
+   since the conf space for these balls is near 0x86C). Each try: change the
+   `arm_write_p929` 2nd arg + reload firmware (no recompile).
+5. **Decoupling test on P9_29 as GPIO:** run a libgpiod sweep on
+   `gpiochip3` line for P9_29. If the servo moves, pin+servo+wiring are GOOD
+   and the problem is purely the PRU/mux path.
+6. **Confirm mux changed** after load (if pinctrl debugfs works):
    ```bash
-   sudo cat /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins | grep -i '9a0\|9a4'
+   sudo cat /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins | grep 8xx
    ```
-   Expect P9_29's offset to read mode 4 (`0x...4...`) after load.
-4. **Decoupling test on P9_29 as GPIO:** temporarily run a libgpiod sweep on
-   `gpiochip3 line 23` (adapt `servo_pwm_test.c`). If the servo moves, the
-   pin+servo+wiring are GOOD and the problem is purely the PRU/mux path.
-5. **Cross-check against the known-good pin:** P9_16 (GPIO0_19) already works
-   with `servo_pwm_test.c`. Reuse that exact working signal chain to isolate
-   whether the issue is "P9_29 specifically" vs "the PRU path generally".
-6. **Verify STANDBY_INIT cleared** — if `devmem2` works at all on the image,
-   read `0x4A322004` after load; bit 4 must be 0.
+   Expect P9_29's offset to read mode 4 (`...4...`).
+7. **Verify STANDBY_INIT cleared** if `/dev/mem` reads work at all:
+   `sudo devmem2 0x4A322004` → bit 4 must be 0.
 
 ---
 
@@ -185,14 +204,15 @@ hence the reboot.
 
 ## 6. OPEN QUESTIONS / UNKNOWNS
 
-- [ ] Is `CONF_P9_29_OFF = 0x9A0` correct, or is it `0x9A4`? (Must confirm on
-      board — cannot verify from this host.)
+- [x] **Conf offset: `0x9A0`/`0x9A4` are WRONG** (board pinctrl proves they're
+      GPIO2). True offset for P9_29 (GPIO3) to be read live (step 4.1); best
+      candidate now `0x86C` (gpmc_csn3 / ball R28).
 - [ ] Does the PRU OCP master have write access to `0x44E10000` on this
       specific image? (If not, self-mux fails and we fall back to GPIO/libgpiod.)
 - [ ] Which exact kernel version is on the board? (`uname -a` on the BBB would
       pin down which of the 6.x quirks apply.)
 - [ ] Was the "brief success" definitely the PRU, or the userspace
-      `servo_pwm_test.c` on P9_16? (Decoupling test #4 answers this.)
+      `servo_pwm_test.c` on P9_16? (Decoupling test #5 answers this.)
 
 ---
 
@@ -203,23 +223,40 @@ hence the reboot.
 | `arm_write_p929.c` | ✅ host gcc | ❌ no BBB | compiles clean |
 | `load_pru.sh` | ✅ bash -n | ❌ no BBB | syntax OK |
 | `gpio_hold.c` | ❌ no libgpiod | ❌ | UNVERIFIED |
-| `pru1_servo.pru1.c` | ❌ no pru-gcc | ❌ | **UNVERIFIED — must build on BBB** |
+| `pru1_servo.pru1.c` | ❌ no pru-gcc on Mac | ❌ | **UNVERIFIED — must build on BBB** |
 | `Makefile` | ✅ parse | ❌ | parses OK |
+| P9_29 conf offset | — | ✅ board pinctrl dump | **0x9A0/0x9A4 WRONG** (GPIO2); true offset TBD |
 | P9_29 actually moves | — | ❌ | **NOT PROVEN** |
 
 **Bottom line:** host-checkable pieces pass; the firmware's on-hardware
-behavior is **unverified** pending a BeagleBone. Do not claim success until
-step 4.1 (build + load + `arm_write_p929 1500`) is observed moving the servo.
+behavior is **unverified** pending a BeagleBone. The previous `0x9A0` conf
+offset was definitively wrong (board pinctrl proves it's GPIO2). The true
+offset must be read off the board via step 4.1 before we can claim success.
 
 ---
 
-## 8. SESSION TEMPLATE (copy for each new work session)
+## 8. SESSION LEDGER (append each session)
 
-```
-## SESSION YYYY-MM-DD
+### SESSION 2026-08-23
 - What changed:
+  - Discovered from board pinctrl dump that `0x9A0`/`0x9A4` are **GPIO2**
+    pins (gpio-64-95), NOT P9_29 (GPIO3). Previous conf offset was wrong.
+  - `pru1_servo.pru1.c`: conf offset now read from shared RAM word 1
+    (overridable via `arm_write_p929 <us> <offset>`), default candidate
+    `0x86C` (gpmc_csn3 / ball R28).
+  - `arm_write_p929.c`: added optional 2nd arg = conf offset (hex).
+  - `PRU_SERVO_DEBUG_LOG.md`: this entry + corrected attempt ledger.
 - What we tried:
-- Outcome (WORKS/FAIL/UNVERIFIED):
+  - Ran user's commands live: `cd pru && make ...` failed (`pru: No such file
+    or directory`) because the shell was ALREADY in `~/eyespies/pru`; `&&`
+    short-circuited so `make`/`load_pru.sh`/`arm_write_p929` never ran and
+    were reported `command not found`. Board only has the OLD repo.
+  - Board pinctrl dump confirmed the conf-offset error.
+- Outcome: **FAIL (wrong offset) → fixed in code, UNVERIFIED on board.**
 - Next action:
+  1. Read P9_29's true conf offset on board (step 4.1).
+  2. `scp`/git-sync the updated `pru/` to the BBB (board is stale).
+  3. `make` + `load_pru.sh pru0` + `arm_write_p929 1500 <offset>`.
 - New unknowns:
-```
+  - Exact conf offset for P9_29 (candidate 0x86C; will be read live).
+  - Whether the PRU OCP master can write `0x44E10000` on this image.
