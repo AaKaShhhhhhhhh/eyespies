@@ -64,8 +64,9 @@ int main(int argc, char **argv)
                       fd, CONTROL_MODULE_PHYS);
     if (cmap == MAP_FAILED) { perror("mmap control module"); close(fd); return 1; }
     volatile uint32_t *conf = (volatile uint32_t *)((char *)cmap + conf_off);
-    *conf = 0x24u;
-    uint32_t mux_rb = *conf;
+    uint32_t mux_before = *conf;          /* read current mux state first */
+    *conf = 0x24u;                         /* attempt: PRU0 mode, rx off, pull off */
+    uint32_t mux_rb = *conf;              /* immediate read-back (did it stick?) */
     munmap(cmap, MAP_SIZE);
 
     /* (2) write the pulse width into PRU shared RAM word 0 */
@@ -78,12 +79,20 @@ int main(int argc, char **argv)
     munmap(smap, MAP_SIZE);
     close(fd);
 
-    printf("MUX   : wrote 0x24 to 0x%08X (offset 0x%03X) -> readback 0x%08X\n",
-           conf_phys, conf_off, mux_rb);
+    printf("MUX   : before 0x%08X -> wrote 0x24 to 0x%08X (offset 0x%03X) -> readback 0x%08X\n",
+           mux_before, conf_phys, conf_off, mux_rb);
     printf("PULSE : wrote %lu us to PRU shared RAM @ 0x%08X -> readback %u\n",
            us, PRU_SHARED_PHYS, pulse_rb);
     printf("Verify mux with: sudo grep %03X /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins\n",
            conf_off);
-    printf("  expect: 44e109bc 00000024  (if it shows ...28 the kernel re-asserted GPIO)\n");
+    if (mux_rb == 0x24u) {
+        printf("RESULT: MUX OK (0x24 = PRU0 mode). The escape hatch works.\n");
+        printf("        Now load the firmware and the PRU will drive P9_29.\n");
+    } else {
+        printf("RESULT: MUX BLOCKED (readback 0x%08X != 0x24).\n", mux_rb);
+        printf("        A kernel driver owns P9_29 and re-asserts GPIO mode.\n");
+        printf("        Find the owner:  sudo cat /sys/kernel/debug/gpio | grep -i 117\n");
+        printf("        (GPIO3_21 = gpio-117). Unbind that driver, then re-run.\n");
+    }
     return 0;
 }

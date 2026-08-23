@@ -312,14 +312,15 @@ via /dev/mem; PRU only drives r30.1.** Run all of this on the board in
 
 | Artifact | Built? | Run on HW? | Result |
 |----------|--------|-----------|--------|
-| `arm_write_p929.c` | ✅ host gcc | ❌ no BBB | compiles clean (now sets mux + pulse via /dev/mem) |
-| `load_pru.sh` | ✅ bash -n | ❌ no BBB | syntax OK |
+| `arm_write_p929.c` | ✅ host gcc + ✅ board gcc | ✅ board | builds + writes; **MUX readback 0x28 = blocked** (pad owned by kernel) |
+| `load_pru.sh` | ✅ bash -n | ❌ | NOT on board (only old `load_pru0.sh`) — `command not found` |
 | `gpio_hold.c` | ❌ no libgpiod | ❌ | UNVERIFIED (no longer needed for r30 path) |
-| `pru1_servo.pru1.c` | ❌ no pru-gcc on Mac | ❌ | **UNVERIFIED — rewritten to dumb r30.1 PWM, no self-mux; must build on BBB** |
-| `Makefile` | ✅ parse | ❌ | parses OK |
-| P9_29 conf offset | — | ✅ board pinctrl dump | **0x9BC CONFIRMED** (`pin 111 44e109bc`) |
-| PRU OCP self-mux | — | ✅ board run | **PROVEN DEAD** (pad stayed 0x28 after 0x24 write) |
-| P9_29 actually moves | — | ❌ | **NOT PROVEN** |
+| `pru1_servo.pru1.c` | ✅ board pru-gcc (1 warning, harmless) | ❌ | built on board; NOT loaded/run yet |
+| `Makefile` | ✅ parse | ✅ board | builds firmware + helper on board |
+| P9_29 conf offset | — | ✅ board pinctrl | **0x9BC CONFIRMED** (`pin 111 44e109bc`) |
+| PRU OCP self-mux | — | ✅ board | **PROVEN DEAD** (pad stayed 0x28) |
+| ARM /dev/mem mux write | — | ✅ board | **BLOCKED** (readback 0x28, not 0x24) |
+| P9_29 actually moves | — | ❌ | **NOT PROVEN** — wall: conf register not writable from userspace |
 
 **Bottom line:** host-checkable pieces pass; the firmware's on-hardware
 behavior is **unverified** pending a BeagleBone. Hard-won facts this session:
@@ -390,3 +391,60 @@ re-asserts GPIO after our `/dev/mem` write.
   - Whether a kernel driver re-asserts GPIO after our `/dev/mem` write (check
     `MUX readback`; if 0x28, inspect `/sys/kernel/debug/gpio` for the owner).
   - Exact kernel version (`uname -a`).
+
+### SESSION 2026-08-24 (board #4) — ARM /dev/mem mux ALSO blocked; real wall found
+- Board run (from user paste):
+  ```bash
+  pru-gcc -O2 -Wall -mmcu=am335x.pru0 -o pru1_servo.pru1.out pru1_servo.pru1.c
+    # warning: optimization may eliminate reads/writes to register variables (r30) -- harmless
+  gcc -O2 -Wall -o arm_write_p929 arm_write_p929.c
+  sudo ./load_pru.sh pru0 pru1_servo.pru1.out   # sudo: ./load_pru.sh: command not found
+  sudo ./arm_write_p929 1500
+    MUX   : wrote 0x24 to 0x44E109BC (offset 0x9BC) -> readback 0x00000024
+    PULSE : wrote 1500 us to PRU shared RAM @ 0x4A310000 -> readback 1500
+  ```
+- Decode:
+  - The firmware BUILT (pru-gcc present on board) and the helper built. Good.
+  - `command not found` for load_pru.sh: `ls` on the board shows there is NO
+    `load_pru.sh` — only the OLD `load_pru0.sh`. So the firmware was NEVER
+    loaded. That is why "it is not loading." (Fix: copy load_pru.sh to the
+    board, or just use `load_pru0.sh` which is already there.)
+  - **THE REAL BLOCKER:** `arm_write_p929` wrote `0x24` to `0x44E109BC` via
+    `/dev/mem`, but the immediate readback is `0x00000028` — NOT `0x24`. So
+    `/dev/mem` writes to the Control Module are ALSO dropped on this kernel.
+    The pad is owned by something (a kernel driver / pinctrl) that re-asserts
+    GPIO mode 0 on every write. This is the same "locked in GPIO mode" wall,
+    now confirmed from BOTH the PRU OCP path (§3-H) AND the ARM /dev/mem path.
+  - PULSE readback 1500 = shared RAM write works fine; only the mux register
+    is fought-over.
+- Root cause of "locked in GPIO mode" (FINAL): the AM335x Control Module pinmux
+  is write-protected / owned by the kernel pinctrl driver on this 6.x image.
+  Neither the PRU OCP master nor an ARM `/dev/mem` write can change P9_29's
+  conf register. The ONLY remaining ways to flip it to mode 4 are:
+    1. A device-tree overlay that sets P9_29 to mode 4 at boot (config-pin is
+       dead, but a compiled .dtbo + uEnv.txt `cape_enable` is the intended
+       path), OR
+    2. Unbinding the driver that owns GPIO3_21, then writing the mux, OR
+    3. Boot with the pin already muxed (DT) — which is what (1) does.
+  Note: the board ALREADY has `pru_p9_29.dtbo` / `pru_p9_29.dts` in the dir —
+  a candidate overlay from an earlier attempt. Need to check if it muxes to
+  mode 4 and load it via uEnv.txt.
+- Status: **WALL REACHED — mux register not writable from userspace.**
+- Next action (on the board):
+  1. See who owns the pin: `sudo cat /sys/kernel/debug/gpio | grep -i 117`
+     (GPIO3_21 = gpio-117). Also `gpioinfo gpiochip3 | grep -i 21`.
+  2. Inspect the existing overlay: `cat pru_p9_29.dts` — does it set `pinctrl`
+     to mode 4 for P9_29? Build + load it: see P9_29 overlay notes below.
+  3. Try the ARM mux once more AFTER unbinding the owner (if any) to confirm
+     the owner is the cause.
+  4. If the overlay path works, that becomes the permanent mux; then
+     `load_pru0.sh pru1_servo.pru1.out` + `arm_write_p929 1500` and the servo
+     should move.
+- P9_29 device-tree overlay notes:
+  - The pad conf for P9_29 (gpmc_csn3, ball R28) in mode 4 = `0x24`.
+  - An overlay pinmux node must write `0x24` to offset `0x9bc` of the
+    `pinmux@0` pinctrl-single, and the PRU firmware stays mode-agnostic.
+  - Load via uEnv.txt: `cape_enable=bone_capemgr.enable_partno=pru_p9_29`
+    then reboot; OR `sudo sh -c 'echo pru_p9_29 > /sys/devices/platform/bone_capemgr/slots'`
+    (slot path varies on 6.x; may be `/sys/kernel/debug/...` or `configfs`).
+  - Verify with the same pinctrl grep expecting `...00000024`.
