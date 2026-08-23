@@ -24,7 +24,13 @@
 #                       writes actually reach the pad
 CFLAGS += -I/usr/lib/ti/pru-software-support-package-v6.3/include/am335x
 
-all: pru0_servo.out servo_steady.out hold_high.out blink.out gpio_hold gpio_read
+all: pru0_servo.out servo_steady.out hold_high.out blink.out gpio_hold gpio_read pru1_servo.out
+
+# Real servo firmware -- PRU1 emits 50 Hz PWM on P9_29 via its OWN __R30
+# register (no Linux mux, no GPIO clock gate, no gpio_hold needed). ARM writes
+# the desired pulse width (us, 1000..2000) into PRU1 Shared RAM @ 0x4A310000.
+pru1_servo.out: pru1_servo.pru1.c
+	pru-gcc -O2 -Wall -mmcu=am335x.pru1 -o $@ $<
 
 # Real servo firmware -- PRU emits 50 Hz PWM sweep on GPIO0_19.
 # Real servo firmware -- PRU emits 50 Hz PWM sweep on GPIO0_19.	
