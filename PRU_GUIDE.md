@@ -21,9 +21,29 @@
   The scheduler slips it by ~20 µs → the servo thinks the angle is wobbling.
 - **Why the PRU doesn't:** the PRU is a 200 MHz co-processor with **no OS**.
   It flips the pin with `__delay_cycles()` accurate to **5 ns** and never
-  calls Linux in the hot loop. (Bonus: it drives the pin in GPIO mode, so we
-  need **zero** device-tree / pinmux changes — it sidesteps the wall that
-  blocked hardware PWM earlier.)
+  calls Linux in the hot loop. We reach the pad in one of two ways:
+
+  - **R30 direct output** — the PRU sets a bit in its own `r30` register and
+    the pad follows it, BUT the pad only reaches the PRU when the pinmux is
+    set to a PRU mode. For P9_29 (ball R28): mode **4** =
+    `pr1_pru0_pru_r30_1` (PRU0 direct output), mode **5** =
+    `pr1_pru1_pru_r30_1` (PRU1 direct output), mode 7 = GPIO (the DEFAULT
+    boot mode). So at boot r30 reaches NOTHING until we switch the mux to
+    mode 4. **This is the real root cause of your "mode 5 / no move":** the
+    pad was briefly in mode 5 (→PRU1) and then reset to mode 7 (GPIO) at
+    reboot, so PRU1's `r30.1` stopped reaching it. The fix: the PRU firmware
+    reprograms its OWN pinmux to mode 4 over its OCP port (no config-pin /
+    devmem / DT overlay needed — the PRU can write the Control Module). Then
+    clear STANDBY_INIT and drive `r30.1`. PRU0 `r30.1` is the right ball;
+    PRU1 `r30.1` is a P8 ball, so the firmware must run on PRU0.
+  - **OCP write to the GPIO block** — works from either PRU but only reaches
+    the pad if the mux is in a GPIO mode (mode 6/7). Less robust here than
+    the self-muxed r30 path.
+
+  Bonus: both methods need **zero** device-tree / pinmux changes — they
+  sidestep the wall (config-pin / devmem / DT overlays are all dead on your
+  kernel 6.x image) that blocked hardware PWM earlier. The only requirement
+  is that the GPIO bank clock stays on, which `gpio_hold` provides.
 
 ### Memory = registers (key idea)
 On the AM335x, hardware is controlled by writing numbers to addresses.
@@ -35,7 +55,12 @@ GPIO bank 0 is at `0x44E07000`. Inside it:
 | 0x194  | GPIO_SETDATAOUT | `1` to a bit → pin HIGH           |
 | 0x190  | GPIO_CLEARDATAOUT | `1` to a bit → pin LOW          |
 
-Pins: **P9_16 = GPIO0.19 (tilt, wired)**, **P9_14 = GPIO0.18 (pan, not wired)**.
+Pins:
+- **P9_16 = GPIO0.19 (tilt, wired)**, **P9_14 = GPIO0.18 (pan, not wired)**.
+- **P9_29 = GPIO3.21** — this is the pin you are now trying to drive. It is
+  reachable from the PRU two ways: PRU0 `r30.1` (direct) *or* GPIO3 OCP writes
+  (either PRU). The firmware `pru1_servo.pru1.c` uses the GPIO3 OCP path, built
+  for **PRU0** (`-mmcu=am335x.pru0`) — despite the "pru1" filename.
 
 **Memorize:** PRU = tiny no-OS 200 MHz chip; 1 cycle = 5 ns; servo = 50 Hz,
 0.5–2.5 ms; GPIO0 base `0x44E07000`.
@@ -230,12 +255,65 @@ GPIO0 base ....... 0x44E07000        (from TRM memory map)
   SET offset ..... 0x194   (write 1 -> high)     (TRM ch.25)
   CLR offset ..... 0x190   (write 1 -> low)      (TRM ch.25)
 P9_16 = GPIO0.19  (tilt, WIRED)      (from BBB SRM header table)
-P9_14 = GPIO0.18  (pan, NOT wired)   (from BBB SRM header table)
+P9_14 = GPIO0.18  (pan,  NOT wired)  (from BBB SRM header table)
+P9_29 = GPIO3.21  (gpiochip3 line 23) -> PRU0 r30.1 DIRECT OUTPUT (bypasses mux)
+PRU0 r30.1 -> P9_29 ;  PRU1 r30.1 -> a P8 ball (so PRU1 cannot move P9_29)
 Servo: 50 Hz, 20 ms period, 500-2500 us = 0-180 deg
-PRU0 DRAM: PRU@0x0 / ARM phys 0x4A300000, SHM at +0x1000  (TRM PRU-ICSS ch)
+PRU0 DRAM: PRU@0x0 / ARM phys 0x4A300000, SHM at 0x4A310000 (TRM PRU-ICSS ch)
 remoteproc0 on this kernel = wkup_m3 (NOT pru0!) -> find pru0 via /name
-Load: cp .out ->/lib/firmware/am335x-pru0-fw ; echo start ->remoteprocN/state
+Load: ./load_pru.sh pru0 <fw>.out   (NO config-pin / devmem / DT overlay)
+P9_29 = r30 direct path: clear STANDBY_INIT (PRU0 CFG 0x4A322004 bit4), no gpio_hold
 ```
+
+---
+
+## 8. Phase 8 — Driving **P9_29** from the PRU (self-mux to PRU mode 4)
+
+This is the pin you asked about, and the "mode 5 / input" reading is the key
+clue. On your kernel 6.x image **config-pin, devmem, and DT overlays are all
+dead** — you cannot change the mux from Linux. So the firmware changes it
+ITSELF: the PRU has an OCP master port that can write the AM335x Control
+Module (pinmux) registers. It reprograms P9_29 (ball R28) from its default
+GPIO (mode 7) to **PRU mode 4** (`pr1_pru0_pru_r30_1`), then clears
+STANDBY_INIT and drives `r30.1`. Fully self-contained, survives reboots, no
+Linux cooperation.
+
+**The root cause of your symptom:** the default boot mode is 7 (GPIO), so
+PRU `r30.1` reaches nothing until the pad is in a PRU mode. Your earlier
+`pru1_servo` was built for **PRU1** — and P9_29's mode **5** (the only PRU
+mode that reaches P9_29 on PRU1) is a different ball assignment than PRU0's
+mode 4. When the pad was in mode 5 it briefly moved; after the reboot it
+returned to mode 7 and the PRU1 firmware drove nothing. The new firmware runs
+on **PRU0** (mode 4 = P9_29) and sets the mux itself, so it's stable.
+
+**Build (on the BBB, in `pru/`):**
+```bash
+make pru1_servo.pru1.out   # builds for am335x.pru0 (mode 4 = P9_29)
+make arm_write_p929        # writes pulse width into PRU shared RAM
+```
+
+**Run (no holder, no config-pin — firmware self-muxes):**
+```bash
+# 1) Load the PRU0 firmware (auto-detects the right remoteproc node).
+sudo ./load_pru.sh pru0 pru1_servo.pru1.out
+
+# 2) Command positions. Firmware reads shared[0] every 20 ms loop:
+sudo ./arm_write_p929 1500   # center (silent)
+sudo ./arm_write_p929 1000   # one extreme
+sudo ./arm_write_p929 2000   # other extreme
+
+# 3) Stop the PRU when done:
+#    sudo ./load_pru.sh pru0 /lib/firmware/am335x-pru0-fw   # re-stop/start empty
+```
+
+**If P9_29 still does not move, in this order:**
+1. `cat $RPROC/state` → must be `running`; `dmesg | tail` → firmware loaded.
+2. After load, read the pinmux to confirm the firmware set mode 4:
+   `sudo cat /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins | grep 9a4`
+   (or check via the PRU — the firmware writes 0x24 to 0x44E109A4).
+3. `sudo devmem2 0x4A322004` → bit 4 (STANDBY_INIT) must be 0 (gate cleared).
+4. Scope/multimeter on P9_29: 50 Hz square wave (~1–2 ms high). Flat = firmware
+   not running (step 1), not a mux issue.
 
 ## Homework (do ONLY this, then report back)
 1. `sudo apt install gcc-pru pru-software-support-package`
