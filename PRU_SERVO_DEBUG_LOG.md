@@ -499,3 +499,28 @@ re-asserts GPIO after our `/dev/mem` write.
   uEnv.txt `cape_enable` vs configfs); whether `dtc` is installed; whether the
   `bone-pinmux-helper` compatible still exists on 6.x (some images dropped it —
   if the helper node fails, the fragment@0 alone may still apply the pinctrl).
+
+### SESSION 2026-08-24 (board #6) — git pull conflict root cause + recovery
+- Symptom: `git pull` aborted with "untracked working tree files would be
+  overwritten by merge: pru/pru_p9_29.dts", then a later pull said "Already up
+  to date" and the corrected `.dts` was missing from disk.
+- **Root cause (confirmed):** the FIRST pull fast-forwarded local `main` to
+  `76af231` (where the corrected `.dts` lives) but aborted the worktree update
+  because `pru_p9_29.dts` was an *untracked* file on the board it refused to
+  clobber. So the branch pointer advanced, but the file was never written. The
+  second pull then saw `main == origin/main` and did nothing — corrected file
+  stayed absent. (`make: No rule to make target 'sudo cp ...'` in the paste was
+  just terminal line-concatenation of a multi-line script, not a real error.)
+- Verified on dev host: `git show HEAD:pru/pru_p9_29.dts` = `0x9bc 0x24` (mode 4,
+  correct); `pru/Makefile` has the `pru_p9_29.dtbo:` target. So the source is
+  right; board just needs to materialize it.
+- Recovery (on board): `git checkout -- pru/pru_p9_29.dts` (restore tracked
+  file from current HEAD 76af231) -> `make pru_p9_29.dtbo` -> load via configfs
+  `/sys/kernel/config/device-tree/overlays/pru_p9_29/dtbo` (slots path is gone
+  on 6.x) -> verify `grep 9bc` shows `...00000024`.
+- `dtc` already present on board (1.6.1). `slots` dir absent -> using configfs
+  or `uEnv.txt dtb_overlay=` + reboot.
+- Status: **instruction issued; UNVERIFIED on board.** New unknowns: whether
+  configfs dir exists on this image; whether `bone-pinmux-helper` binds on 6.x
+  (if `status=applied` but mux stays 0x28, the helper node isn't taking and we
+  must re-route the pinctrl through an existing node).
