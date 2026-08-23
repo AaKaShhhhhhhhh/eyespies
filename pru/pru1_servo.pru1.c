@@ -48,7 +48,10 @@
      grep "${LINE}:gpio-96-127" /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins
    The printed 44e108xx is P9_29's conf register. */
 #define CONTROL_MODULE_BASE 0x44E10000u
-#define DEFAULT_CONF_OFF    0x86Cu   /* CANDIDATE (gpmc_csn3 / ball R28). Verify. */
+#define DEFAULT_CONF_OFF    0x9BCu   /* CONF_GPMC_CSN3 (ball R28 / P9_29, GPIO3_21).
+                                       CONFIRMED from board pinctrl dump 2026-08-23:
+                                       gpio-96-127 line 21 = 0x44E109BC (offset 0x9BC).
+                                       Override at runtime via arm_write_p929 <us> <offset>. */
 #define CONF_P9_29          (CONTROL_MODULE_BASE + DEFAULT_CONF_OFF)
 
 #define SERVO_BIT  (1u << 1)   /* r30.1 -> P9_29 on PRU0 (once muxed to mode 4) */

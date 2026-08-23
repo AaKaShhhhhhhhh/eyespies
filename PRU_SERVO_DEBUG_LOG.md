@@ -128,42 +128,67 @@ hence the reboot.
   - `pru1_servo.pru1.c`: conf offset now overridable via shared RAM word 1
     (ARM writes it with `arm_write_p929 <us> <offset>`), default candidate
     `0x86C` (gpmc_csn3 / ball R28). No recompile needed to try offsets.
-  - `arm_write_p929.c`: accepts optional 2nd arg = conf offset (hex).
+  - `arm_write_p929.c`: added optional 2nd arg = conf offset (hex).
 - Status: **UNVERIFIED on board** (files not yet copied to the BBB; offset
   still a candidate). Must run the "find true offset" step next.
+
+### G. Session 2026-08-23 (board #2) — TRUE OFFSET CONFIRMED
+- Evidence: full `/sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins`
+  dump. P9_29 = ball R28 = GPIO3_21 = gpio-96-127 **line 21**. Walking the
+  `gpio-96-127` rows: line 20 = `44e109b4` (pin 109), line 0 (`0:?`) = `44e109b8`
+  (pin 110, EMMC DAT2), ... line 18 = `44e10a1c` (pin 135). Line 21 is in the
+  `0:?` gap and computes to **`44e109BC`** = offset **`0x9BC`** from Control
+  Module base. **This is the real conf register — `0x9A0`/`0x86C` were wrong.**
+- User's run this session was a no-op for two compounding reasons:
+  1. `load_pru.sh` = `command not found` — board still has the OLD repo (the
+     updated `pru/` files were never copied there; `make` said "up to date"
+     on stale objects).
+  2. `arm_write_p929 1500 44e10874` passed the FULL PHYSICAL ADDRESS as the
+     offset (helper multiplies by base → wrote to bogus `0x89210874`). Helper
+     now accepts either form (offset `0x9bc` OR phys `0x44e109bc`) and subtracts.
+- Fix applied this session (on Mac):
+  - `arm_write_p929.c`: accepts offset OR physical addr; subtracts base.
+  - `pru1_servo.pru1.c`: `DEFAULT_CONF_OFF = 0x9BC` (confirmed), with clamp
+    `if (conf_off > 0x1000) conf_off = 0x9BC` so a bad value can't brick mux.
+  - Both files must be re-synced to the BBB (scp/git pull) before building.
+- Status: **UNVERIFIED on board** — needs: sync → make → load_pru.sh pru0 →
+  arm_write_p929 1500 (offset auto 0x9bc) → observe servo → re-dump pinctrl
+  expecting `44e109bc ... 00000024`.
 
 ---
 
 ## 4. WHAT WE CAN TRY NEXT (priority order)
 
-1. **Find P9_29's TRUE conf offset on the board (do this FIRST, no rebuild):**
-   ```bash
-   LINE=$(gpioinfo gpiochip3 | awk '/[Pp]9_29/{print $2}' | tr -d ':')
-   grep "${LINE}:gpio-96-127" /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins
-   ```
-   The printed `44e108xx` is P9_29's conf register. That replaces the guess.
-   (If `gpioinfo` line name isn't `P9_29`, list with `gpioinfo gpiochip3` and
-   eyeball which line is the P9_29 pin.)
-2. **Sync the updated `pru/` files to the BBB** (scp or git pull). The board
-   only has the OLD repo — that's why `make`/`load_pru.sh` were missing.
-3. **Build & load on the BBB** (from inside `~/eyespies/pru`, no extra `cd`):
+1. **Sync the updated `pru/` files to the BBB** (scp or git pull). The board
+   only has the OLD repo — that's why `make` reported "up to date" and
+   `load_pru.sh`/`arm_write_p929` were `command not found`. This is the #1
+   recurring blocker.
+2. **Build & load on the BBB** (from inside `~/eyespies/pru`, no extra `cd`):
    ```bash
    make pru1_servo.pru1.out arm_write_p929
    sudo ./load_pru.sh pru0 pru1_servo.pru1.out
-   sudo ./arm_write_p929 1500 <OFFSET_FROM_STEP1>   # e.g. 0x86c
+   sudo ./arm_write_p929 1500          # offset auto-defaults to 0x9bc now
+   # or explicitly:  sudo ./arm_write_p929 1500 0x9bc   (or 0x44e109bc)
    ```
-4. **If it still doesn't move**, try adjacent offsets (0x860..0x8xx range,
-   since the conf space for these balls is near 0x86C). Each try: change the
-   `arm_write_p929` 2nd arg + reload firmware (no recompile).
-5. **Decoupling test on P9_29 as GPIO:** run a libgpiod sweep on
+3. **Confirm the mux actually changed** (pinctrl debugfs):
+   ```bash
+   sudo grep 9bc /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins
+   ```
+   Expect: `44e109bc 00000024` (mode 4, pull-disabled). If it reads `...27`,
+   the firmware's OCP write didn't land (see kernel-problem #1 — PRU master
+   may be blocked from 0x44E10000) → fall back to libgpiod GPIO test.
+4. **Decoupling test on P9_29 as GPIO:** run a libgpiod sweep on
    `gpiochip3` line for P9_29. If the servo moves, pin+servo+wiring are GOOD
    and the problem is purely the PRU/mux path.
-6. **Confirm mux changed** after load (if pinctrl debugfs works):
+5. **Sweep the servo** by changing pulse width (no reboot, no reload needed
+   once the firmware is looping):
    ```bash
-   sudo cat /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins | grep 8xx
+   sudo ./arm_write_p929 1000     # ~0°
+   sudo ./arm_write_p929 1500     # ~90°
+   sudo ./arm_write_p929 2000     # ~180°
    ```
-   Expect P9_29's offset to read mode 4 (`...4...`).
-7. **Verify STANDBY_INIT cleared** if `/dev/mem` reads work at all:
+   Stop the PRU (it loops forever): `echo stop | sudo tee /sys/class/remoteproc/<node>/state`.
+6. **Verify STANDBY_INIT cleared** if `/dev/mem` reads work at all:
    `sudo devmem2 0x4A322004` → bit 4 must be 0.
 
 ---
