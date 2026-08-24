@@ -18,9 +18,19 @@
  *     is a DIFFERENT ball on P8, so mode 5 would NOT move P9_29.)
  *
  * Conf register value 0x24:
- *   bits [2:0] = 0b100 = mode 4  (PRU0_r30_1 output)
- *   bits [4:3] = 0b10  = pull-up enabled
- *   bit  18    = 0      = input buffer (rxactive) OFF (output-only is fine)
+ *   bits [2:0] = 0b100 = mode 4   (PRU0_r30_1 output)
+ *   bit  3     = 0      = pull-up/down ENABLED (bit set would disable)
+ *   bit  4     = 0      = pull type = pulldown
+ *   bit  5     = 0      = input buffer (rxactive) OFF (output-only is fine)
+ *
+ * HOW THE MUX GETS APPLIED:
+ *   - The earlier version used a `bone-pinmux-helper` consumer node. That driver
+ *     LOADS on 6.12 (the node appears in /proc/device-tree) but does NOT apply
+ *     the pinctrl -- so the pad stayed in mode 0 (0x28). Verified on board.
+ *   - This version uses a PINCTRL HOG: a child of the pin-controller with
+ *     `pinctrl-hog;`. The generic pinctrl core applies hog states itself at
+ *     controller probe time, with NO consumer driver required. This is the
+ *     reliable method on 6.x.
  *
  * The PRU firmware (pru1_servo.pru1.c) does NOT touch the mux -- it relies on
  * this overlay to put the pad in mode 4, then it just drives r30.1.
@@ -34,20 +44,16 @@
         __overlay__ {
             pru_p9_29_pins: pinmux_pru_p9_29_pins {
                 pinctrl-single,pins = <
-                    0x9bc 0x24  /* P9_29 (gpmc_csn3) -> Mode 4 (PRU0 r30.1), pull-up */
+                    0x9bc 0x24  /* P9_29 (gpmc_csn3) -> Mode 4 (PRU0 r30.1), pull-down */
                 >;
             };
-        };
-    };
 
-    fragment@1 {
-        target = <&ocp>;
-        __overlay__ {
-            pru_pin_helper {
-                compatible = "bone-pinmux-helper";
+            /* Hog: pinctrl core applies this at pin-controller probe -- no
+               consumer driver needed. Replaces bone-pinmux-helper. */
+            pru_p9_29_hog {
+                pinctrl-hog;
                 pinctrl-names = "default";
                 pinctrl-0 = <&pru_p9_29_pins>;
-                status = "okay";
             };
         };
     };
