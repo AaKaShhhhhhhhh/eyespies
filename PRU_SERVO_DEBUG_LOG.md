@@ -1054,3 +1054,82 @@ known BBB problem / do I need to compile a new Linux image / what's the core iss
     3) printf 'uenvcmd=mw.l 0x44E109BC 0x24\n' | sudo tee -a /boot/firmware/uEnv.txt
     4) sudo reboot
     5) verify grep shows 0x24.
+
+================================================================================
+SESSION 2026-0X-XX (board #20) — STANDBY_INIT BIT 0 DOES NOT CLEAR WITH WRITE-0
+================================================================================
+### SETUP REACHED
+- `git pull` successfully fast-forwarded the 3 firmware/tool files (arm_write_p929.c
+  +18, pru0_servo.pru0.c +5, pru1_servo.pru1.c -1/+1...). All edits from the
+  STANDBY_INIT theory are on the board now.
+- `make` rebuilt everything with board pru-gcc:
+    pru0_servo.out, servo_steady.out, hold_high.out, blink.out,
+    arm_write_p929, pru1_servo.pru1.out
+  (pru1 still warns: line 66 `volatile register uint32_t __R30` -Wvolatile-register-var).
+- Loaded pru0_servo.out onto remoteproc1 (4a334000.pru), booted "now up".
+- Ran `sudo ./arm_write_p929 1500`.
+
+### DECISIVE OBSERVATION (this is the new root clue)
+arm_write_p929 output:
+    MUX   : before 0x00000024 -> wrote 0x24 to 0x44E109BC -> readback 0x00000024   ✅ mux fine
+    SYSCFG: before 0x00000025 -> cleared STANDBY_INIT (bit0) @ 0x4A322004 -> readback 0x00000025  ❗
+    PULSE : wrote 1500 us to PRU shared RAM @ 0x4A310000 -> readback 1500          ✅ shared RAM fine
+
+The MUX write landed (0x24 sticks) and the shared-RAM write landed (1500).
+BUT the SYSCFG write of `scfg_before & ~1u` (= 0x24, bit0=0) read back **0x25**
+(bit0 STILL 1). The write to bit 0 was DISCARDED.
+
+**This means clearing STANDBY_INIT via a write-0 (`&= ~1u`) is a NO-OP on this
+silicon/setup.** The earlier "fix" identified the correct bit (0, not 4) but used
+the wrong write polarity. Two independent paths prove it:
+  1) The firmware does `(*(volatile...)0x00026004) &= ~1u;` at startup, and the
+     servo stayed dead.
+  2) arm_write_p929 then did `*syscfg = scfg_before & ~1u;` and read back unchanged.
+
+### TWO HYPOTHESES FOR THE NO-OP WRITE
+  (H1) SYSCFG[STANDBY_INIT] is WRITE-1-TO-CLEAR (W1C): you must write `1` to bit 0
+       to clear it; writing 0 is a no-op. Common for "init done" / status bits.
+  (H2) SYSCFG[STANDBY_INIT] is a PRCM/status-gated bit that reflects the PRU-ICSS
+       standby state and is not directly writable; clearing it requires waking the
+       PRU subsystem power domain (not a register poke). If H2, the fix is elsewhere.
+
+### PROBE TO DECIDE (syscfg_probe.c, written this session)
+Builds on the board with `gcc -O2 -o syscfg_probe syscfg_probe.c`, run `sudo ./syscfg_probe`.
+It reads SYSCFG@0x4A322004, then tries in order:
+    (a) write (val & ~1)   -- W0C hypothesis
+    (b) write (val | 1)    -- W1C hypothesis
+    (c) write (val & ~1)   -- W0C again
+    (d) read after 2 ms settle
+The polarity that drives bit0 -> 0 is the one to bake into BOTH the firmware
+(0x00026004) and arm_write_p929 (0x4A322004) clear lines.
+Expected print:
+    - If (b) clears it  -> "W1C works: write 1 to bit0"  -> FIX = write bit0=1.
+    - If neither clears -> "NEITHER... PRCM-gated"        -> STANDBY_INIT is not the
+      cause; abandon this theory and look at pin ownership / r30 wiring again.
+
+### WHY THIS MATTERS / WHAT CHANGED IN THEORY
+- PRIOR theory (board #17-19): mux was the only blocker. DISPROVEN: mux = 0x24 confirmed.
+- PREVIOUS theory (this session's first draft): firmware clears wrong bit (4 not 0).
+  PARTIALLY right: bit 0 IS the right bit, but we assumed write-0 clears it.
+  The readback 0x25==before proves write-0 does NOT clear it.
+- CURRENT state: most likely W1C (H1). Need probe output to confirm before editing.
+
+### OPEN QUESTIONS / NEXT STEPS
+1. Run syscfg_probe on the board; paste the 4 register dumps + interpretation line.
+2. If W1C: change BOTH
+     pru0_servo.pru0.c  line 34:  PRU_CFG_SYSCFG &= ~1U;        ->  |= 1U;
+     pru1_servo.pru1.c  line 83:  (*...)0x00026004) &= ~1u;     ->  |= 1u;
+     arm_write_p929.c   line 94:  *syscfg = scfg_before & ~1u;  ->  = scfg_before | 1u;
+   rebuild, reload, re-run arm_write_p929 1500; expect servo sweep.
+3. If NEITHER: STANDBY_INIT is not the cause -> pivot to:
+     - Is P9_29 owned by a kernel driver? `sudo cat /sys/kernel/debug/gpio | grep -i 117`
+       (GPIO3_21). Even in mode 4, some pinmuxers keep the gpiochip request.
+     - Is r30.1 actually P9_29 and not P9_3X? Double-check ball R28 -> pr1_pru0_r30_1.
+     - Try a known-good r30 blink on a free PRU pin (hold_high.out on P9_29) with a LED
+       or the servo's signal line to see ANY level change.
+4. Commit NOT done; user hasn't asked. git pull is clean.
+
+### FILES TOUCHED THIS SESSION (uncommitted on Mac)
+- pru/syscfg_probe.c  (NEW probe tool)
+- (pending edits to pru0_servo.pru0.c / pru1_servo.pru1.c / arm_write_p929.c once
+  probe confirms polarity)
