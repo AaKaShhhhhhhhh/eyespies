@@ -13,7 +13,7 @@
  *   - P9_29 = ball R28 = gpmc_csn3 = GPIO3_21 = gpiochip3 line 21 = pin 111.
  *     Its conf register is at Control-Module offset 0x9BC (phys 0x44E109BC).
  *     (Confirmed from: `sudo grep 9bc /sys/kernel/debug/pinctrl/.../pins`
- *      -> "pin 111 (44e109bc)").
+ *      -> "pin 111 (44e109bc)".)
  *   - P9_29 is reached by PRU0's r30.1 in MODE 4. (Mode 5 = PRU1 r30.1, which
  *     is a DIFFERENT ball on P8, so mode 5 would NOT move P9_29.)
  *
@@ -23,38 +23,34 @@
  *   bit  4     = 0      = pull type = pulldown
  *   bit  5     = 0      = input buffer (rxactive) OFF (output-only is fine)
  *
- * HOW THE MUX GETS APPLIED:
- *   - The earlier version used a `bone-pinmux-helper` consumer node. That driver
- *     LOADS on 6.12 (the node appears in /proc/device-tree) but does NOT apply
- *     the pinctrl -- so the pad stayed in mode 0 (0x28). Verified on board.
- *   - This version uses a PINCTRL HOG: a child of the pin-controller with
- *     `pinctrl-hog;`. The generic pinctrl core applies hog states itself at
- *     controller probe time, with NO consumer driver required. This is the
- *     reliable method on 6.x.
+ * HOW THE MUX GETS APPLIED (the part that actually works on 6.x):
+ *   The pin state must be claimed as the "default" pinctrl of a node that is
+ *   GUARANTEED to probe at boot, otherwise nothing writes 0x24 and the pad
+ *   keeps its reset value 0x28 (mode 0). Two earlier forms FAILED on this
+ *   image (board #10/#14):
+ *     - bone-pinmux-helper consumer: driver is a no-op on 6.12 (node loads,
+ *       pin unchanged).
+ *     - a stray child node with a bare `pinctrl-hog;` boolean: `pinctrl-hog`
+ *       is NOT a property the mainline pinctrl core recognizes, so nothing
+ *       ever referenced the state and it was never applied.
+ *   The RELIABLE form: make the pinmux controller itself the consumer of the
+ *   state via its own pinctrl-0 + pinctrl-names="default". pinctrl-single
+ *   always probes, so its default state is always applied at controller
+ *   probe -- before any peripheral or userspace can touch the pad. This is
+ *   the canonical "boot-time pinmux" pattern on AM335x.
  *
  * The PRU firmware (pru1_servo.pru1.c) does NOT touch the mux -- it relies on
  * this overlay to put the pad in mode 4, then it just drives r30.1.
  */
 
-/ {
-    compatible = "ti,am335x-bone-black", "ti,am335x-bone";
+&am33xx_pinmux {
+	/* Make the controller itself consume our state at probe (auto-hog). */
+	pinctrl-names = "default";
+	pinctrl-0 = <&pru_p9_29_pins>;
 
-    fragment@0 {
-        target = <&am33xx_pinmux>;
-        __overlay__ {
-            pru_p9_29_pins: pinmux_pru_p9_29_pins {
-                pinctrl-single,pins = <
-                    0x9bc 0x24  /* P9_29 (gpmc_csn3) -> Mode 4 (PRU0 r30.1), pull-down */
-                >;
-            };
-
-            /* Hog: pinctrl core applies this at pin-controller probe -- no
-               consumer driver needed. Replaces bone-pinmux-helper. */
-            pru_p9_29_hog {
-                pinctrl-hog;
-                pinctrl-names = "default";
-                pinctrl-0 = <&pru_p9_29_pins>;
-            };
-        };
-    };
+	pru_p9_29_pins: pinmux_pru_p9_29_pins {
+		pinctrl-single,pins = <
+			0x9bc 0x24  /* P9_29 (gpmc_csn3) -> Mode 4 (PRU0 r30.1), pull-down */
+		>;
+	};
 };

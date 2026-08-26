@@ -524,3 +524,376 @@ re-asserts GPIO after our `/dev/mem` write.
   configfs dir exists on this image; whether `bone-pinmux-helper` binds on 6.x
   (if `status=applied` but mux stays 0x28, the helper node isn't taking and we
   must re-route the pinctrl through an existing node).
+
+### SESSION 2026-08-24 (board #10) — ROOT CAUSE FOUND: bone-pinmux-helper is a no-op on 6.12
+- Re-ran board #9 fix (append .dtbo to existing dtb_overlay line, reboot). New
+  evidence: `grep 9bc` -> STILL `44e109bc 00000028`, BUT
+  `find /proc/device-tree -name 'pru_pin_helper'` -> **LOADED**. So the overlay
+  IS in the live DT, yet the pad mux never changed.
+- CONCLUSION: `bone-pinmux-helper` driver loads the node but does NOT apply the
+  pinctrl on kernel 6.12 (vestigial). It's a no-op consumer -> pad stays mode 0.
+  (The BB-ADC/BB-HDMI defaults that loaded alongside are applied by the
+  something-else in their overlays, not bone-pinmux-helper.)
+- FIX (committed on dev host as 2f479e9, pushed to origin/main): rewrite
+  pru_p9_29.dts to use a PINCTRL HOG instead of bone-pinmux-helper. A hog child
+  node `pinctrl-hog; pinctrl-0 = <&pru_p9_29_pins>` is applied by the generic
+  pinctrl core at pin-controller probe — NO consumer driver needed. This is the
+  reliable method on 6.x.
+- Board sequence (run on board):
+    cd ~/eyespies
+    git pull                       # gets 2f479e9 (hog overlay)
+    cd pru
+    make pru_p9_29.dtbo
+    sudo cp pru_p9_29.dtbo /boot/dtbs/6.12.28-bone25/
+    # uEnv.txt dtb_overlay line already includes it from board #9
+    sudo reboot
+    sudo grep 9bc /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins   # want 0x24
+- Contingency if still 0x28: hog syntax may differ on this DT (e.g. needs to be
+  under a specific pinmux subnode, or 'gpio-hog' vs 'pinctrl-hog'). Next step
+  would be attach pinctrl-0 directly to the pruss/ocp node as its default
+  state. Status: **hog rewrite committed+pushed; UNVERIFIED on board.**
+
+### SESSION 2026-08-24 (board #12) — SMOKING GUN in boot log
+- User pasted a full boot log (18:19 reboot). Two decisive findings:
+  1. BUILT-IN COMPETITOR: systemd runs at boot
+       `Starting pru-pinmux.service - Force P9_29 to PRU Mode 5...`
+       `Finished pru-pinmux.service - Force P9_29 to PRU Mode 5.`
+     The BeagleBoard image ships `pru-pinmux.service` that forces P9_29 to MODE 5
+     (PRU1). Our firmware is PRU0 -> MODE 4. This is a conflicting actor on the
+     exact pin, present every boot from first power-on. It currently FAILS (pin
+     reads 0x28 not 0x05, so its method is also broken on 6.x), but it must be
+     disabled or it will keep clobbering/confusing the mux.
+  2. OUR OVERLAY NEVER LOADS. U-Boot boot log shows ONLY:
+       uboot_overlays: loading .../BB-ADC-00A0.dtbo
+       uboot_overlays: loading .../BB-BONE-eMMC1-01-00A0.dtbo
+       uboot_overlays: loading /lib/firmware/BB-HDMI-TDA998x-00A0.dtbo
+     No `pru_p9_29.dtbo` load line EVER appears. So U-Boot is not loading it.
+     ROOT CAUSE of that: board #9 sed only MODIFIES an existing `dtb_overlay=`
+     line (`s#^\(dtb_overlay=.*\)$#...#`); it never creates one. This image's
+     /boot/uEnv.txt is 205 bytes (just `uname_r=` + comments) -> no dtb_overlay
+     line -> nothing appended -> U-Boot ignores our .dtbo. THE SED WAS BUGGY.
+- The mcasp PIN0 pinctrl error is unrelated (pin 0, base-DT audio noise).
+- NEXT: inspect actual /boot/uEnv.txt + pru-pinmux.service, then (a) disable the
+  service, (b) ADD (not append-to) a proper dtb_overlay line listing the 3
+  defaults + pru_p9_29.dtbo, (c) reboot, verify 0x24.
+- Status: **root causes identified; fix pending board file inspection.**
+
+### SESSION 2026-08-24 (board #11) — user asks: BBB known problem? new kernel? core issue?
+- User frustration: still 0x28 after hog commit (2f479e9). Three direct questions:
+  (1) is this a known BBB problem? (2) must I compile a new Linux image? (3) core issue?
+- Answers (recorded for the log):
+  - KNOWN PROBLEM — YES. BBB firmware jumped 4.x/5.x -> 6.x and the old
+    cape/pinmux workflow broke: `config-pin` (userspace), capemgr `slots`, and
+    `bone-pinmux-helper` are all unreliable/no-ops on 6.x. This is a documented
+    BBB pain point, NOT something we caused.
+  - NEW KERNEL? — NO. Recompiling the kernel is NOT needed and won't help. The
+    kernel CAN apply overlays (it loaded BB-ADC / BB-BONE-eMMC1 / BB-HDMI at boot).
+    The failure is our SPECIFIC overlay's mux write not landing — a DT/load issue,
+    not a missing kernel feature.
+  - CORE ISSUE: P9_29 is stuck in mode 0 because the write 0x24 -> 0x44E109BC has
+    NEVER actually been performed by anything with authority. Userspace is blocked
+    (CONFIG_STRICT_DEVMEM). DT overlay is the only path. We proved bone-pinmux-helper
+    is a no-op on 6.12 (node loads, pin unchanged). The hog rewrite is UNVERIFIED:
+    we don't yet know if (a) U-Boot loaded the NEW .dtbo or (b) the hog applied. The
+    boot logs NEVER showed "loading .../pru_p9_29.dtbo", so load is the prime suspect
+    again. (Note: find /proc/device-tree pru_pin_helper LOADED earlier only proved
+    the HELPER version loaded; it did not prove the mux was applied.)
+  - The `mcasp PIN0 ... cannot claim` pinctrl error in every boot is UNRELATED base-DT
+    audio noise (pin 0, not our pin 111). Ignore it.
+- Why it "keeps happening": each attempt fixed a DIFFERENT wrong assumption (wrong
+  offset 0x194, wrong PRU mode 5, userspace blocked, helper no-op, overlay not
+  loading) without a verification gate between steps. We must now confirm load+apply
+  before changing the mechanism again.
+- Closing the loop: verification gate — confirm hog source present (git pull),
+  rebuild+recopy, idempotent uEnv.txt fix, reboot, then read (1) boot "loading" line,
+  (2) `grep 9bc` -> want 0x24, (3) dmesg overlay/pinctrl, (4) /proc/device-tree hog
+  node. If still 0x28 -> BAKE the mux into the BASE DTB (decompile
+  am335x-boneblack-uboot.dtb, set 0x9bc=0x24, recompile, backup+replace). That
+  removes all overlay machinery and is the guaranteed-no-overlay path.
+- Status: **conceptual diagnosis done; UNVERIFIED on board.**
+
+### SESSION 2026-08-24 (board #9) — still 0x28 after reboot: dtb_overlay line ignored
+- After board #8's `sudo reboot`, `grep 9bc` STILL -> `44e109bc 00000028`. Overlay
+  did not apply.
+- Root cause: base `/boot/uEnv.txt` ALREADY has a `dtb_overlay=` line (the default
+  BB overlays: BB-ADC, BB-BONE-eMMC1, BB-HDMI...). The board #8 step did
+  `echo 'dtb_overlay=...' | sudo tee -a /boot/uEnv.txt` -> created a SECOND
+  `dtb_overlay=` line. U-Boot uses the first (defaults) and ignores the appended
+  one, so pru_p9_29 was never in the active overlay list. (BB-ADC/BB-HDMI still
+  loaded in the new boot log => bone-pinmux-helper DOES work on 6.12, so the
+  mechanism is fine; only our line was wrong.)
+- FIX (on board): append our .dtbo to the EXISTING dtb_overlay line, not a new
+  line. Remove any stray duplicate first. Block:
+    cd ~/eyespies/pru
+    make pru_p9_29.dtbo
+    sudo cp pru_p9_29.dtbo /boot/dtbs/6.12.28-bone25/
+    sudo sed -i '/^dtb_overlay=.*pru_p9_29/d' /boot/uEnv.txt
+    sudo sed -i 's#^\(dtb_overlay=.*\)$#\1 /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo#' /boot/uEnv.txt
+    grep -n 'dtb_overlay' /boot/uEnv.txt
+    sudo reboot
+- Post-reboot verify:
+    sudo grep 9bc /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins   # want 0x24
+    find /proc/device-tree -name 'pru_pin_helper' 2>/dev/null && echo LOADED || echo NOT-LOADED
+- Contingency if still 0x28: the bone-pinmux-helper consumer isn't applying the
+  pinctrl -> re-route pinctrl-0 onto an always-probing node (pruss / ocp) instead
+  of bone-pinmux-helper. Status: **fix issued; UNVERIFIED on board.**
+
+### SESSION 2026-08-24 (board #8) — file was GONE from board; git path error
+- After board #6's `mv pru_p9_29.dts /tmp/...` (to unblock the merge), the file
+  was removed from the board. The subsequent `git checkout -- pru/pru_p9_29.dts`
+  FAILED with "pathspec ... did not match any file(s) known to git" because the
+  shell was ALREADY in `~/eyespies/pru`, so git looked for `pru/pru/pru_p9_29.dts`
+  (folder doubled). Net: `ls pru/` showed NEITHER `.dts` NOR `.dtbo`. The local
+  `main` is at 76af231 (which DOES track the corrected file), so a path-correct
+  `git checkout` restores it.
+- User also reported VS Code shows the file "all commented out". FALSE: the file
+  has a comment header (lines 4-27) then real DTS code from line 29 (`/ {`,
+  `fragment@0`, `target = <&am33xx_pinmux>`). The user's own screenshot shows the
+  colored code — it's a misread / stale buffer, not a broken file.
+- Corrected command (run ON THE BOARD, serial — NOT in VS Code's Mac terminal):
+    cd ~/eyespies
+    git checkout -- pru/pru_p9_29.dts      # path is repo-relative from repo root
+    cd pru
+    grep -nE '0x9bc|0x24' pru_p9_29.dts     # expect both lines
+    make pru_p9_29.dtbo
+    ls -l pru_p9_29.dtbo
+- Then deploy via U-Boot (proven path from board #7 boot log):
+    sudo cp pru_p9_29.dtbo /boot/dtbs/6.12.28-bone25/
+    # add to /boot/uEnv.txt:  dtb_overlay=/boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo
+    sudo reboot
+    sudo grep 9bc /sys/kernel/debug/44e10800.pinmux-pinctrl-single/pins  # want 0x24
+- Status: **command corrected; UNVERIFIED on board.**
+
+### SESSION 2026-08-24 (board #7) — BOOT LOG DECODE: U-Boot overlay is the real path
+- User pasted full U-Boot + kernel 6.12.28-bone25 boot log. Decisive findings:
+  - `debug: [enable_uboot_overlays=1]` and U-Boot loads `am335x-boneblack-uboot.dtb`
+    then `BB-ADC-00A0.dtbo`, `BB-BONE-eMMC1-01-00A0.dtbo`, `BB-HDMI-TDA998x-00A0.dtbo`
+    from `/boot/dtbs/6.12.28-bone25/` and `/lib/firmware/`. => **U-Boot applies
+    DT overlays at boot; this is the reliable mux path on this image.**
+  - `pinctrl-single 44e10800.pinmux: 142 pins, size 568` -> our overlay's
+    `target = <&am33xx_pinmux>` resolves to this driver. (base DT label confirmed.)
+  - `remoteproc remoteproc1: 4a334000.pru is available` (PRU0)
+    `remoteproc remoteproc2: 4a338000.pru is available` (PRU1)
+    -> PRU0 = 4a334000, matches load_pru0.sh + -mmcu=am335x.pru0 firmware.
+  - Kernel cmdline has `root=/dev/mmcblk1p3`, `net.ifnames=0`; CONFIG_STRICT_DEVMEM
+    implied (userspace CM writes were blocked in board #4/#5).
+- CORRECTION of earlier guidance: configfs overlay load is fragile on 6.x; the
+  BOOTLOADER route (`dtb_overlay=` in /boot/uEnv.txt + reboot) is the proven one
+  on this exact image. Switch primary instructions to it.
+- Working command block (on board):
+    cd ~/eyespies/pru
+    git checkout -- pru/pru_p9_29.dts     # HEAD=76af231 already; restores 0x9bc/0x24
+    make pru_p9_29.dtbo
+    sudo cp pru_p9_29.dtbo /boot/dtbs/6.12.28-bone25/
+    # add one line to /boot/uEnv.txt (use a free editor line):
+    #   dtb_overlay=/boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo
+    sudo reboot
+    # after boot:
+    sudo grep 9bc /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins
+    #   expect:  pin 111 (PIN111) ... 44e109bc 00000024
+- Caveat: the overlay's fragment@1 uses `bone-pinmux-helper` as the pinctrl
+  consumer. If after reboot mux is STILL 0x28, that driver isn't in 6.12 and we
+  must re-route the pinctrl onto an existing probing node (e.g. the PRU0/PRU-ICSS
+  node) so the mux actually gets applied. `status` of configfs not needed here.
+- Status: **instructions corrected to bootloader route; UNVERIFIED on board.**
+
+### SESSION 2026-08-24 (board #11/#12) — ROOT CAUSES DECODED from boot log
+- Boot log (U-Boot SPL 2022.04-gc6f4cf7d, AM335X-GP rev2.1, kernel 6.12.28-bone25)
+  confirmed TWO real blockers, neither was our overlay syntax:
+
+  BLOCKER A — our overlay was NEVER LOADED by U-Boot. The boot log shows U-Boot
+  only loads BB-ADC, BB-BONE-eMMC1, BB-HDMI. Our pru_p9_29.dtbo never appears.
+  Cause: my board #9 `sed` command only MODIFIED an existing dtb_overlay= line;
+  it never CREATED one. This image's /boot/uEnv.txt is 205 bytes (only uname_r=
+  + comments) — no dtb_overlay= line existed, so the sed did nothing, and the
+  default capes load from U-Boot's built-in list, not from uEnv.txt. => the
+  dtb_overlay line must be added with all 4 overlays (defaults + ours).
+
+  BLOCKER B — a built-in service pru-pinmux.service runs EVERY boot:
+    Starting pru-pinmux.service - Force P9_29 to PRU Mode 5...
+  Its ExecStart is `devmem2 0x44E10994 0x0005` = PIN P9_31 (offset 0x194), NOT
+  P9_29 (0x9BC). So it does NOT compete for our pin — it touches a different one
+  and is itself blocked by CONFIG_STRICT_DEVMEM. Masking it is harmless cleanup.
+  => NOT the cause of our 0x28, but disabled anyway to remove noise.
+
+- THIRD bug found in the last run: the glob picked
+  `BB-HDMI-CEC-TDA998x-00A0.dtbo`, but U-Boot's own log loads
+  `BB-HDMI-TDA998x-00A0.dtbo` (no "CEC"). A wrong/missing overlay in the
+  dtb_overlay line can make U-Boot skip the line — so the line must name the
+  EXACT files U-Boot itself loads (no CEC variant).
+
+- CORRECTION of board #11 diagnosis: the board's `make pru_p9_29.dtbo` failure
+  was NOT a missing Makefile target. `origin/main` HAS the target (line 89) and
+  the hog .dts (commit 2f479e9). The actual failure was: (1) `make` was run from
+  `~` (home), not `~/eyespies/pru`; and (2) the board had NOT pulled 2f479e9, so
+  its local .dts was the OLD bone-pinmux-helper version. After a `git pull` +
+  `cd pru` + `make`, the build will succeed.
+
+- DEFINITIVE deploy sequence (run ON THE BOARD, one line at a time):
+    cd ~/eyespies
+    git pull                       # gets 2f479e9 (hog .dts + Makefile dtbo target)
+    cd pru
+    make pru_p9_29.dtbo            # now exists
+    sudo cp pru_p9_29.dtbo /boot/dtbs/6.12.28-bone25/
+    sudo systemctl mask pru-pinmux.service
+    # Replace dtb_overlay line with the EXACT names U-Boot loads + ours:
+    sudo sed -i '/^dtb_overlay=/d' /boot/uEnv.txt
+    printf 'dtb_overlay=/boot/dtbs/6.12.28-bone25/BB-ADC-00A0.dtbo /boot/dtbs/6.12.28-bone25/BB-BONE-eMMC1-01-00A0.dtbo /lib/firmware/BB-HDMI-TDA998x-00A0.dtbo /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo\n' | sudo tee -a /boot/uEnv.txt
+    sudo reboot
+  After boot verify:
+    sudo dmesg | grep -i pru_p9_29          # want: loading .../pru_p9_29.dtbo
+    sudo grep 9bc /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins
+                                            # want:  pin 111 ... 44e109bc 00000024
+- Status: **root causes identified; corrected sequence NOT yet run on board.**
+
+### USER QUESTION ANSWERED (board #11) — "why does this keep happening / is it a
+known BBB problem / do I need to compile a new Linux image / what's the core issue"
+- Known BBB problem? YES. Moving 4.x/5.x -> 6.x broke the entire old pinmux
+  workflow: config-pin, capemgr slots, and bone-pinmux-helper are all
+  unreliable/no-ops on 6.x. We hit all three.
+- New Linux image needed? NO. Recompiling the kernel won't help; the kernel CAN
+  apply overlays (it loads BB-ADC/eMMC/HDMI every boot). Our problem was the
+  overlay not loading + wrong method, not a missing kernel feature.
+- Core issue: P9_29 stuck in mode 0 because the 0x24 write was never performed
+  by anything with authority: userspace blocked (STRICT_DEVMEM), DT overlay the
+  only path, but bone-pinmux-helper is a no-op on 6.12, and our dtb_overlay line
+  was never actually added (sed bug) so U-Boot never loaded our .dtbo.
+- Why "keeps happening": each round fixed a DIFFERENT wrong assumption
+  (wrong offset -> wrong PRU mode -> userspace blocked -> helper no-op -> overlay
+  not loading) without a verification gate. The board #11/#12 sequence adds that
+  gate (dmesg confirms load; pinctrl confirms 0x24).
+
+### SESSION 2026-08-25 (board #13) — THE ROOT CAUSE (boot log decode)
+- Boot log shows the ACTUAL bug, different from all prior guesses:
+    uboot_overlays: [dtb_overlay=/boot/dtbs/6.12.28-bone25/BB-ADC-00A0.dtbo /boot/dtbs/6.12.28-bone25/BB-BONE-eMMC1-01-00A0.dtbo /lib/firmware/BB-HDMI-TDA998x-00A0.dtbo /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo] ...
+    uboot_overlays: loading /boot/dtbs/6.12.28-bone25//boot/dtbs/6.12.28-bone25/BB-ADC-00A0.dtbo /boot/dtbs/6.12.28-bone25/BB-BONE-eMMC1-01-00A0.dtbo /lib/firmware/BB-HDMI-TDA998x-00A0.dtbo /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo ...
+    load - load binary file from a filesystem   <-- U-Boot printed the 'load' HELP => bad path
+    libfdt fdt_check_header(): FDT_ERR_BADMAGIC
+- FINDING: this U-Boot build (2022.04-gc6f4cf7d) does NOT tokenize dtb_overlay on
+  spaces. It prepends the boot dir (/boot/dtbs/6.12.28-bone25/) to the ENTIRE string
+  and tries to load it as ONE file -> fails -> NO overlay (incl. ours) is applied.
+- The three overlays that DID load (BB-ADC, BB-BONE-eMMC1, BB-HDMI-TDA998x) are from
+  U-Boot's BUILT-IN default cape list, NOT from dtb_overlay. dtb_overlay adds extras.
+- CORRECT dtb_overlay format for this U-Boot: ONE bare filename (no path, no spaces).
+  U-Boot prepends the boot dir, so `dtb_overlay=pru_p9_29.dtbo` ->
+  loads /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo. (The other 3 are auto-loaded.)
+- This single format bug explains EVERY prior failure: all attempts used either a
+  non-existent dtb_overlay line (sed never created one) or a multi-path string that
+  U-Boot concatenated into garbage. Our overlay was therefore NEVER loaded until now.
+- DEFINITIVE FIX (run on board, one line at a time):
+    sudo sed -i '/^dtb_overlay=/d' /boot/uEnv.txt
+    echo 'dtb_overlay=pru_p9_29.dtbo' | sudo tee -a /boot/uEnv.txt
+    cat /boot/uEnv.txt
+    sudo power-cycle the board   # restart
+  GATE after restart:
+    sudo grep 9bc /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins
+    # want:  pin 111 (PIN111) ... 44e109bc 00000024
+  (Also: serial boot log should show
+    uboot_overlays: loading /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo ...  <size> bytes read)
+- Status: root cause found (format bug); fix NOT yet applied on board.
+
+### SESSION 2026-08-25 (board #13b) — user suspected /boot/uEnv.txt not read; DISPROVEN
+- User hypothesis: "board isn't reading uEnv file." Boot log DISPROVES this:
+    Checking for: /boot/uEnv.txt ...
+    394 bytes read in 3 ms ...
+    Loaded environment from /boot/uEnv.txt
+    Running uname_boot ...
+  and the dtb_overlay VALUE appears later in the log (it IS parsed). The file is
+  read and dtb_overlay is processed. The ONLY defect is the space-separated multi-path
+  FORMAT: U-Boot concatenated the paths into one bad filename -> FDT_ERR_BADMAGIC.
+  Fix = single bare filename. Built-in cape list already loads BB-ADC/eMMC/HDMI.
+- Status: hypothesis disproven by boot-log evidence; format fix is the only action.
+
+### SESSION 2026-08-25 (board #13c) — pin still 0x28; root cause = fix not applied yet
+- User rebooted and grepped: pin 111 ... 44e109bc 00000028 (unchanged).
+- Diagnosis: the login paste shows user did NOT run the single-filename fix before
+  this boot. The board still had the OLD uEnv.txt with full-path multi-value dtb_overlay
+  (the format U-Boot mangles). So nothing changed.
+- Reminder of proven facts: (1) board READS /boot/uEnv.txt (394 bytes read; dtb_overlay
+  value printed in boot log). (2) Failure is FORMAT only: multi-path space-separated
+  string -> U-Boot prepends boot dir to whole string -> one bad path -> FDT_ERR_BADMAGIC
+  -> no overlay. (3) The 3 working overlays (BB-ADC/eMMC/HDMI) load from U-Boot's
+  BUILT-IN cape list, independent of dtb_overlay.
+- Correct fix (NOT yet confirmed applied on board):
+    sudo sed -i '/^dtb_overlay=/d' /boot/uEnv.txt
+    echo 'dtb_overlay=pru_p9_29.dtbo' | sudo tee -a /boot/uEnv.txt
+  then restart and gate on pin 111 = 00000024.
+- Status: awaiting user to run the block + paste BEFORE/AFTER uEnv + post-restart grep.
+
+### SESSION 2026-08-25 (board #13d) — file was already clean (duplicated); 0x28 was stale boot
+- BEFORE block revealed the ACTUAL current state: uEnv.txt had TWO identical lines
+    dtb_overlay=pru_p9_29.dtbo
+    dtb_overlay=pru_p9_29.dtbo
+  i.e. the format was ALREADY the correct single-filename form (from an earlier run of
+  the fix block, executed twice -> duplicate). It was NOT the bad full-path multi-value
+  version. So the earlier "full-path format" theory described the PRIOR boot (the one
+  that logged FDT_ERR_BADMAGIC), not this one.
+- The 0x28 grep the user reported came from the PREVIOUS boot, which still had the broken
+  full-path multi-value dtb_overlay line. That boot never tested the corrected file.
+- The sed deleted both dup lines and tee re-added ONE -> AFTER is now a single clean
+    dtb_overlay=pru_p9_29.dtbo
+  This is the first clean single-line state. It has NOT been started with this file yet.
+- NEXT: (1) verify /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo exists (non-zero size);
+  (2) restart the board; (3) gate on pin 111 = 00000024; (4) capture serial boot log line
+    uboot_overlays: loading /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo ... <size> bytes read
+- Status: file correct; restart pending; proof of load pending.
+
+### SESSION 2026-08-25 (board #14) — U-Boot loads dtbo OK, but hog NOT sticking (pin 0x28)
+- BOOT LOG PROOF the format fix worked:
+    uboot_overlays: loading /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo ...
+    671 bytes read in 5 ms (130.9 KiB/s)
+  Our 671-byte hog dtbo is loaded by U-Boot into the DTB. Format fix CONFIRMED.
+- BUT after full boot: pin 111 (44e109bc) = 00000028 (mode 0 = GPIO), NOT 0x24.
+  So the overlay is in the DTB but the pinctrl hog is NOT taking effect (or is
+  being reset after probe). This is a NEW failure mode, distinct from all prior ones.
+- Facts: base DTB = am335x-boneblack-uboot.dtb (univ variant NOT found, so cape-universal
+  NOT active). pru-pinmux.service "Finished" in log but its ExecStart = devmem2 0x44E10994
+  (P9_31), so it does NOT touch P9_29 (0x9BC). Not the cause.
+- OPEN QUESTIONS pending board diagnostics:
+    (a) Is the pru_pins hog node present in /sys/firmware/devicetree/base?
+    (b) Did pinctrl-single apply or error on the hog (dmesg)?
+    (c) What device owns pin 111 after boot (pinmux-pins debug)?
+- HYPOTHESIS: hog applied 0x24 at pinctrl probe (~3.3s) then later reset to 0x28 by
+  base DTB pinctrl-0 re-apply OR a pin-init helper. Diagnostics will confirm.
+- NEXT: run diag block; if hog node absent -> overlay target label wrong; if present
+  but pin 0x28 -> something resets it (find owner); if pinctrl errored -> fix DTS hog.
+- Status: format fix proven; hog-not-sticking under investigation.
+
+### SESSION 2026-08-25 (board #14) — dtb_overlay FIXED (overlay loads), hog not applying; pivot to devmem2 test
+- BOOT LOG PROOF the dtb_overlay format fix worked:
+    uboot_overlays: loading /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo ...
+    671 bytes read in 5 ms (130.9 KiB/s)
+  Our 671-byte hog dtbo is loaded by U-Boot into the base DTB. Format fix CONFIRMED.
+- BUT after full boot: pin 111 (44e109bc) = 00000028. Overlay is in the DTB but the
+  pinctrl hog is NOT applying 0x24. New failure mode.
+- CURRENT pru_p9_29.dts (committed form, pins directly in hog node):
+    fragment@0 { target = <&am33xx_pinmux>; __overlay__ {
+        pru_p9_29_hog: pinmux_pru_p9_29_hog { pinctrl-hog; pinctrl-single,pins = <0x9bc 0x24>; };
+    }; };
+  This is the canonical hog form but is NOT sticking on this kernel via U-Boot overlay.
+- KEY NEW EVIDENCE: pru-pinmux.service runs `devmem2 0x44E10994 h 0x0005` and FINISHES
+  without error. Strongly implies userspace devmem2 writes to the Control Module are
+  NOT blocked by STRICT_DEVMEM on this image (contradicts earlier assumption).
+- PIVOT: test whether devmem2 can set 0x44E109BC=0x24 directly. If readback=0x24, the
+  mux is solved from userspace in 2 seconds and the DT fight is moot. If "Operation not
+  permitted", STRICT_DEVMEM blocks it and we must fix the DT hog.
+- Diagnostics requested: (A) devmem2 write+read 0x44E109BC; (B) live DT hog node presence;
+  (C) dmesg pinctrl/hog messages.
+- Status: overlay loads (format fixed); hog not applying; devmem2 test pending.
+
+### SESSION 2026-08-25 (board #14) -- dtb_overlay SOLVED; hog not applying; evid + devmem test
+- BOOT LOG PROVES dtb_overlay format fixed:
+    uboot_overlays: loading /boot/dtbs/6.12.28-bone25/pru_p9_29.dtbo ...
+    671 bytes read in 5 ms (130.9 KiB/s)
+  Overlay now loads. Format saga DONE.
+- BUT pin 111 (44e109bc) still = 00000028 after boot. Hog in DTB but kernel not
+  applying 0x24. New issue, distinct from all prior.
+- Base DTB = am335x-boneblack-uboot.dtb (the -univ variant NOT found -> cape-universal OFF).
+- pru-pinmux.service "Finished" but ExecStart=devmem2 0x44E10994 (P9_31), NOT P9_29;
+  harmless to our pin.
+- HYPOTHESIS A: kernel pinctrl-single not honoring the hog subnode (needs different form).
+- HYPOTHESIS B: /dev/mem IS writable (pru-pinmux.service finishing implies devmem2
+  succeeded) -> we can set 0x44E109BC=0x24 from userspace at runtime, no DT needed.
+- DIAGNOSTIC (board): live-DT hog node presence; dmesg pinctrl/hog; pinmux-pins owner;
+  devmem2 read 0x44E109BC, write 0x0024, readback; config-pin availability.
+- Status: overlay loads; need evid to pick fix path (DT hog tweak vs runtime devmem2).
