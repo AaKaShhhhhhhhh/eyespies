@@ -21,9 +21,11 @@ FW="$2"
 [ -z "$FW"  ] && { echo "usage: sudo $0 <pru0|pru1> <firmware.out>"; exit 1; }
 [ -f "$FW"  ] || { echo "error: $FW not found"; exit 1; }
 
+# On 6.x the remoteproc node /name is the DT address, not "pruN":
+#   pru0 -> 4a334000.pru   pru1 -> 4a338000.pru   (so match by address)
 case "$PRU" in
-    pru0) FWNAME=am335x-pru0-fw ;;
-    pru1) FWNAME=am335x-pru1-fw ;;
+    pru0) FWNAME=am335x-pru0-fw; PAT="4a334000" ;;
+    pru1) FWNAME=am335x-pru1-fw; PAT="4a338000" ;;
     *)    echo "error: PRU must be pru0 or pru1"; exit 1 ;;
 esac
 
@@ -31,7 +33,7 @@ esac
 # usually wkup_m3, NOT a PRU, on this kernel — never hardcode the number).
 RPROC=""
 for d in /sys/class/remoteproc/*/; do
-    if grep -q "$PRU" "$d/name" 2>/dev/null; then
+    if grep -q "$PAT" "$d/name" 2>/dev/null; then
         RPROC="${d%/}"
         break
     fi

@@ -897,3 +897,160 @@ known BBB problem / do I need to compile a new Linux image / what's the core iss
 - DIAGNOSTIC (board): live-DT hog node presence; dmesg pinctrl/hog; pinmux-pins owner;
   devmem2 read 0x44E109BC, write 0x0024, readback; config-pin availability.
 - Status: overlay loads; need evid to pick fix path (DT hog tweak vs runtime devmem2).
+
+### SESSION 2026-08-26 (board #15) — OVERLAY REWRITE BRICKED BOOT; RECOVERED via manual eMMC-overlay boot
+- CONTEXT: dev (Claude) and Hermes agreed the pru_p9_29.dts should drop the dead
+  `pinctrl-hog` boolean + bone-pinmux-helper and instead attach pinctrl-0/default to
+  the PINMUX CONTROLLER itself (`&am33xx_pinmux { pinctrl-names="default"; pinctrl-0=<&pru_p9_29_pins>; }`).
+  dtc built it cleanly (540 B, was 671 B). Hermes shipped it without board verification.
+  THAT REWRITE BRICKED THE BOOT. Lesson: never ship a DT-overlay change that touches the
+  pinmux controller's own pinctrl without first booting it on hardware.
+- SYMPTOM: board hung at `Starting kernel ...` with no further output. Boot log showed
+  `uboot_overlays: loading .../pru_p9_29.dtbo ... 540 bytes read` (overlay loaded fine),
+  then kernel started and died silently. Root cause: sticking pinctrl-0 onto the
+  pinctrl-single CONTROLLER node faults pinctrl probe at boot on this 6.12 image.
+- RECOVERY (no SD card; eMMC only; no /dev/mem edit from U-Boot because saveenv FAILS
+  on EXT4: `Saving Environment to EXT4... Failed (1)`). Key env facts learned:
+  * `boot` re-IMPORTS /boot/uEnv.txt every time -> any `setenv dtb_overlay` in RAM is
+    overwritten before overlays load. Clearing it never sticks.
+  * `uenvcmd` runs BEFORE the import -> clearing dtb_overlay there is also undone.
+  * `setenv _ub ${uname_boot}` FAILS: uname_boot ~4KB string overflows setenv.
+  * No `ext4write`/`ext4rm` compiled in -> cannot edit/delete files from U-Boot.
+  => The ONLY way to boot Linux was a MANUAL load with the BASE DTB (no pru overlay).
+- eMMC LAYOUT (from `mmc part` on device 1):
+    p1  type 0c FAT  "Boot"  -> ONLY holds uEnv.txt, ID.txt, sysconf.txt, services/
+                            (NO /boot/, NO vmlinuz/dtbs here)
+    p2  type 82 swap
+    p3  type 83 Linux -> THE ROOTFS (root=/dev/mmcblk1p3). Kernel/initrd/dtb live HERE
+                            under /boot/. Kernel enumerates eMMC as mmcblk1 (NOT mmcblk0).
+- MANUAL BOOT RECIPE that worked (at `=>` prompt), base DTB + eMMC overlay, NO pru overlay:
+    mmc dev 1
+    load mmc 1:3 0x82000000 /boot/vmlinuz-6.12.28-bone25
+    load mmc 1:3 0x88000000 /boot/dtbs/6.12.28-bone25/am335x-boneblack-uboot.dtb
+    load mmc 1:3 0x8A000000 /boot/dtbs/6.12.28-bone25/BB-BONE-eMMC1-01-00A0.dtbo
+    fdt addr 0x88000000
+    fdt resize 0x10000
+    fdt apply 0x8A000000
+    load mmc 1:3 0x88080000 /boot/initrd.img-6.12.28-bone25
+    setenv bootargs console=ttyS0,115200n8 root=/dev/mmcblk1p3 ro rootfstype=ext4 rootwait coherent_pool=1M net.ifnames=0 rng_core.default_quality=100
+    bootz 0x82000000 0x88080000:${filesize} 0x88000000
+  CRITICAL LESSON: the eMMC does NOT probe with the base DTB alone. The BB-BONE-eMMC1
+  overlay MUST be `fdt apply`-ed or the kernel can't find /dev/mmcblk1p3 (drops to
+  initramfs "ALERT! /dev/mmcblk1p3 does not exist"). First two manual attempts failed
+  for exactly this reason (forgot the eMMC overlay), not the root= name.
+  Also: load the initrd LAST so ${filesize} is the initrd length, not the dtbo's.
+- PERMANENT FIX once at a shell:
+    sudo sed -i '/^dtb_overlay=.*pru_p9_29/d' /boot/uEnv.txt
+    cat /boot/uEnv.txt
+  -> confirmed the `dtb_overlay=pru_p9_29.dtbo` line is GONE. Normal `boot` now works
+  again (loads default overlays incl. eMMC; no longer references the broken .dtbo).
+- STATUS NOW: board is alive at a login shell (debian@BeagleBone), pin back at base
+  0x28 (board #14 state). The broken overlay is removed from uEnv.txt but the .dtbo
+  file may still sit in /boot/dtbs/6.12.28-bone25/ -- harmless since nothing loads it.
+- NEXT (the actual mux problem, still unsolved): decide DT-hog-tweak vs runtime-devmem2.
+  Board #14 evidence: pru-pinmux.service ran `devmem2 0x44E10994 ...` and FINISHED
+  without error -> /dev/mem writes to the Control Module may actually be ALLOWED on this
+  image (STRICT_DEVMEM theory may be WRONG). Decisive 30-second test, run on board:
+    sudo devmem2 0x44E109BC w            # expect 0x00000028
+    sudo devmem2 0x44E109BC h 0x0024     # try the mux write
+    sudo devmem2 0x44E109BC w            # readback
+    -> 0x24 => /dev/mem writable => repurpose pru-pinmux.service to write 0x44E109BC=0x0024
+              at boot. DONE, no overlay, zero DT-boot risk.
+    -> 0x28 => STRICT_DEVMEM blocks it => need boot-safe overlay: attach pinctrl-0/default
+              to a REAL always-on consumer node (&ocp or &pruss), NOT the pinmux controller
+              (that shape bricked boot). This is the conventional "hog via real device".
+- OPEN RISK for any future overlay: do NOT attach pinctrl-0 to &am33xx_pinmux again.
+  And ALWAYS verify a manual `fdt apply` + boot on hardware before declaring an overlay fixed.
+- Status: BOARD RECOVERED and usable; mux mechanism still TBD pending devmem2 test above.
+
+### SESSION 2026-08-26 (board #16) — DEVMEM2 DEAD; PINMUX-HOG LOADS BUT NO-OP
+- DEVMEM2 TEST DONE (decisive): ran devmem2 0x44E109BC w -> 0x28, then
+  `sudo devmem2 0x44E109BC h 0x0024` -> output "Written 0x24; readback 0x28".
+  => THE KERNEL SILENTLY DROPS /dev/mem WRITES TO THE CONTROL MODULE. devmem2
+  reports "Written" but the register stays 0x28. PATH B (boot service writing 0x24)
+  is DEAD. /dev/mem is NOT writable for mux on this image.
+- Also discovered a BOGUS service on the board: `pru-pinmux.service`
+  ("Force P9_29 to PRU Mode 5") -- wrong MODE (5 not 4) AND uses devmem2 (now known
+  dead). Must be disabled/removed. It finished without error precisely because devmem2
+  always "succeeds" even when the write is dropped.
+- Rebuilt overlay as PINCTRL-HOG (commit/revert era): loaded (530 B via dtb_overlay)
+  and DID NOT brick, but post-boot `grep 9bc` still showed 0x28. Hogs are unreliable
+  on 6.12 -- the pin didn't get muxed. CONFIRMS the forum claim that hogs/bone-pinmux
+  don't reliably apply on 6.x.
+
+### SESSION 2026-08-26 (board #17) — &ocp AS CONSUMER: DEPENDENCY CYCLE DROPS PIN
+- Rewrote overlay: pins node under &am33xx_pinmux, consumed by &ocp
+  (pinctrl-names="default"; pinctrl-0=<&pru_p9_29_pins>). Built 636 B. Loaded clean,
+  no boot hang. But post-boot `grep 9bc` STILL showed 0x28.
+- ROOT CAUSE FOUND IN BOOT LOG:
+  `[    0.110550] /ocp: Fixed dependency cycle(s) with
+   /ocp/.../scm@0/pinmux@800/pinmux_pru_p9_29_pins`
+  => Because &am33xx_pinmux (the pinmux controller) is itself a CHILD of &ocp, having
+  &ocp reference a pins node that lives under it creates a SELF-REFERENCE CYCLE. DT
+  resolves this by DROPPING the phandle, so &ocp's pinctrl-0 points nowhere and the pin
+  is never set. (Same class of trap as board #15's direct-controller attach.)
+- FIX (pending board apply): attach the pinctrl to &pruss instead of &ocp. &pruss is a
+  SIBLING subtree of &am33xx_pinmux (NOT an ancestor), so NO dependency cycle, the
+  phandle resolves, and the pruss driver applies its `default` pinctrl at probe -> pin
+  held at 0x24. devmem2 is dead; hog is unreliable; this is the only remaining mechanism.
+- OVERLAY SHAPE (for &pruss attempt):
+    &am33xx_pinmux { pru_p9_29_pins: pinmux_pru_p9_29_pins { pinctrl-single,pins = <0x9bc 0x24>; }; };
+    &pruss { pinctrl-names = "default"; pinctrl-0 = <&pru_p9_29_pins>; };
+- VERIFY after reboot: `sudo grep 9bc /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins`
+  want `pin 111 (44e109bc) 00000024`. Also confirm the "Fixed dependency cycle" warning
+  is GONE from the boot log (proves the cycle was the blocker).
+- FALLBACK if &pruss doesn't claim it: try &pruss_soc_bus or &pru0 as the consumer.
+  If `make` errors "symbol 'pruss' not found", the label differs -- check
+  `grep pruss /proc/device-tree/__symbols__/pruss` and adjust.
+- STATUS NOW: board healthy, no brick risk from this shape (636 B loaded fine). Awaiting
+  &pruss-attach verdict to confirm the mux finally sticks at 0x24.
+
+### SESSION 2026-08-26 (board #18) — &pruss OVERLAY: PROPERTY IN LIVE DT BUT DRIVER WON'T APPLY
+- Built &pruss-attached overlay (638 B): pins node under &am33xx_pinmux, consumed by
+  &pruss (pinctrl-names="default"; pinctrl-0=<&pru_p9_29_pins>). Installed via
+  dtb_overlay=pru_p9_29.dtbo. Loaded clean, NO boot hang.
+- DIAGNOSTIC (decisive, from live /proc/device-tree dump):
+    A) /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pinctrl-maps
+       -> "No such file or directory" rc=2  (this debug file does NOT exist on 6.12.28-bone25)
+    B) node pinmux_pru_p9_29_pins IS present in live DT at line 3420, child of
+       /ocp/.../scm@0/pinmux@800, with `pinctrl-single,pins = <0x9bc 0x24>` present.
+    C) `grep '"pruss@0"'` on the live DT returned EMPTY -- the node is not literally
+       named "pruss@0" in this dump's quoting, so that grep was a bad probe (not proof).
+    D) `grep pru_p9_29_pins /proc/device-tree/__symbols__` -> line 154:
+       `pru_p9_29_pins = "/ocp/.../scm@0/pinmux@800/pinmux_pru_p9_29_pins"`
+       **CONFIRMS &pruss's pinctrl-0 phandle resolved and points at our node.**
+    E) despite D, kernel logs: `pinctrl-single 44e10800.pinmux: no pins entries for
+       pinmux_pru_p9_29_pins`  and post-boot `grep 9bc` still shows 0x28.
+- ROOT CAUSE: a pin-child node injected by a runtime/overlay THEN added under
+  pinmux@800 is visible in /proc/device-tree but is NOT registered in the
+  pinctrl-single driver's internal pin table at the time pruss probes, so the
+  consumer cannot apply it. This is a pinctrl-single + dynamic-overlay quirk.
+  We have now PROVEN all three overlay shapes (&controller, &ocp, &pruss) hit it.
+  NO overlay shape will work on this kernel. Overlay approach is ABANDONED.
+
+### SESSION 2026-08-26 (board #19) — FINAL WORKING FIX: U-Boot `uenvcmd` writes the pad
+- KEY INSIGHT: We don't need the kernel's pinctrl subsystem at all. U-Boot runs with
+  full hardware access (no STRICT_DEVMEM, no pinctrl driver). A `mw.l` to the padconf
+  register WILL stick, and because NO DT group references offset 0x9bc, the kernel's
+  pinctrl-single never re-touches that pad -> the value survives into Linux.
+- STEP 1 (from board shell): remove the dead overlay line so nothing references 0x9bc:
+    sudo sed -i '/^dtb_overlay=.*pru_p9_29/d' /boot/uEnv.txt
+- STEP 2: U-Boot checks `uenvcmd` against the BOOT-PARTITION /uEnv.txt (on mmc1p1,
+  mounted at /boot/firmware/uEnv.txt) -- NOT the rootfs /boot/uEnv.txt, and it checks
+  it BEFORE `Running uname_boot`. So put the command in the boot-partition file:
+    printf 'uenvcmd=mw.l 0x44E109BC 0x24\n' | sudo tee -a /boot/firmware/uEnv.txt
+  (and clean any stray uenvcmd= lines from rootfs /boot/uEnv.txt).
+- VERIFICATION (post-reboot):
+    * U-Boot log now shows `Running uenvcmd ...` just before `Running uname_boot`.
+    * At login: `sudo grep 9bc /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins`
+      -> `pin 111 (PIN111) 0:? 44e109bc 00000024 pinctrl-single`   ✅ SOLVED, PERMANENT.
+- WHY THIS IS SAFE: it's one register write in a text file. Worst case it's a no-op and
+  we still boot normally (manual-boot recovery via U-Boot still available if ever needed).
+- CONCLUSION: P9_29 = PRU0 r30.1 (mode 4, 0x24) is now set at every boot by U-Boot.
+  The pru_p9_29.dts overlay is retired (keep .dts as a record, but it is NOT loaded).
+- REPRO RECIPE (if board is reflashed / for board #20+):
+    1) Boot to shell.
+    2) sudo sed -i '/^dtb_overlay=.*pru_p9_29/d' /boot/uEnv.txt
+    3) printf 'uenvcmd=mw.l 0x44E109BC 0x24\n' | sudo tee -a /boot/firmware/uEnv.txt
+    4) sudo reboot
+    5) verify grep shows 0x24.

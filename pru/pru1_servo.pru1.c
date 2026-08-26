@@ -85,14 +85,22 @@ int main(void)
     __R30 &= ~SERVO_BIT;
 
     while (1) {
-        pulse_us = shared[0];
-        if (pulse_us < 1000u) pulse_us = 1000u;   /* clamp to safe servo range */
-        if (pulse_us > 2000u) pulse_us = 2000u;
+        uint32_t mode = shared[0];
 
-        __R30 |=  SERVO_BIT;                       /* P9_29 HIGH */
-        delay_us(pulse_us);                        /* pulse length = position   */
-        __R30 &= ~SERVO_BIT;                       /* P9_29 LOW  */
-        delay_us(PERIOD_US - pulse_us);            /* fill -> 20 ms total @50Hz */
+        if (mode == 0u) {            /* TEST: force constant LOW  */
+            __R30 &= ~SERVO_BIT;
+        } else if (mode == 1u) {     /* TEST: force constant HIGH */
+            __R30 |=  SERVO_BIT;
+        } else {                     /* NORMAL: 50 Hz PWM, pulse = position */
+            pulse_us = mode;
+            if (pulse_us < 1000u) pulse_us = 1000u;   /* clamp safe range */
+            if (pulse_us > 2000u) pulse_us = 2000u;
+
+            __R30 |=  SERVO_BIT;                       /* P9_29 HIGH */
+            delay_us(pulse_us);                        /* pulse length */
+            __R30 &= ~SERVO_BIT;                       /* P9_29 LOW  */
+            delay_us(PERIOD_US - pulse_us);            /* fill 20 ms */
+        }
     }
     return 0;
 }

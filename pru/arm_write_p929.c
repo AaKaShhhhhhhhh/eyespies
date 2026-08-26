@@ -21,6 +21,12 @@
  *     sudo ./arm_write_p929 1500            # default mux offset 0x9BC
  *     sudo ./arm_write_p929 1500 0x9bc      # same, explicit
  *     sudo ./arm_write_p929 1500 0x44e109bc # full phys addr also accepted
+ *   TEST modes (firmware must be the updated build):
+ *     sudo ./arm_write_p929 0   # force P9_29 CONSTANT LOW  (servo should slam one way)
+ *     sudo ./arm_write_p929 1   # force P9_29 CONSTANT HIGH (servo should slam other way)
+ *   If 0/1 do nothing but touching the wire moves it -> r30 is tri-stated
+ *   (STANDBY_INIT not cleared / stale firmware). If 0/1 DO move it -> PWM
+ *   timing/servo-center issue; return to 1000/1500/2000.
  *
  * Build:  gcc -O2 -Wall -o arm_write_p929 arm_write_p929.c
  * Requires root (opens /dev/mem).
@@ -45,8 +51,12 @@ int main(int argc, char **argv)
         return 1;
     }
     unsigned long us = strtoul(argv[1], NULL, 10);
-    if (us < 1000) us = 1000;
-    if (us > 2000) us = 2000;
+    /* 0 and 1 are reserved TEST modes (constant LOW / constant HIGH);
+       anything else is a pulse width and is clamped to 1000..2000 us. */
+    if (us != 0 && us != 1) {
+        if (us < 1000) us = 1000;
+        if (us > 2000) us = 2000;
+    }
 
     unsigned long conf_in = DEFAULT_CONF_OFF;
     if (argc >= 3)

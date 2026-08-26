@@ -2,52 +2,48 @@
 /plugin/;
 
 /*
- * pru_p9_29.dts  --  mux header pin P9_29 to PRU0 (mode 4) so a PRU0 firmware
- * can drive it via r30.1.
+ * pru_p9_29.dts  --  (RETIRED) mux header pin P9_29 to PRU0 (mode 4).
  *
- * HARD-WON FACTS (see PRU_SERVO_DEBUG_LOG.md):
+ * STATUS: THIS OVERLAY DOES NOT WORK ON 6.12.28-bone25 (or any 6.x BBB image
+ * tried). It is kept only as a historical record. DO NOT load it.
+ *
+ * HARD-WON FACTS (see PRU_SERVO_DEBUG_LOG.md, board #10..#19):
  *   - On this 6.x BeagleBone image, config-pin, devmem, PRU OCP writes to the
- *     Control Module, and ARM /dev/mem writes to the Control Module are ALL
- *     blocked (CONFIG_STRICT_DEVMEM / pinctrl ownership). The ONLY way to set
- *     the pad mux is a device-tree overlay with kernel authority.
- *   - P9_29 = ball R28 = gpmc_csn3 = GPIO3_21 = gpiochip3 line 21 = pin 111.
- *     Its conf register is at Control-Module offset 0x9BC (phys 0x44E109BC).
- *     (Confirmed from: `sudo grep 9bc /sys/kernel/debug/pinctrl/.../pins`
- *      -> "pin 111 (44e109bc)".)
- *   - P9_29 is reached by PRU0's r30.1 in MODE 4. (Mode 5 = PRU1 r30.1, which
- *     is a DIFFERENT ball on P8, so mode 5 would NOT move P9_29.)
+ *     Control Module, ARM /dev/mem writes (devmem2), AND DT overlays are all
+ *     UNABLE to set the pad mux:
+ *       * devmem2 reports "Written" but readback stays 0x28 (kernel drops it).
+ *       * Overlay pins-node shapes (&am33xx_pinmux pinctrl-0, &ocp consumer,
+ *         &pruss consumer) all load, appear in /proc/device-tree, the pruss
+ *         phandle resolves -- but pinctrl-single logs "no pins entries for
+ *         pinmux_pru_p9_29_pins" and the pad stays 0x28. Dynamic-overlay +
+ *         pinctrl-single quirk: the injected pin node is never registered in
+ *         the driver's pin table at probe time.
  *
- * Conf register value 0x24:
- *   bits [2:0] = 0b100 = mode 4   (PRU0_r30_1 output)
- *   bit  3     = 0      = pull-up/down ENABLED (bit set would disable)
- *   bit  4     = 0      = pull type = pulldown
- *   bit  5     = 0      = input buffer (rxactive) OFF (output-only is fine)
+ * THE WORKING FIX (board #19, FINAL): set the pad in U-Boot, not in Linux.
+ *   U-Boot has raw hardware access; a `mw.l` to the padconf register sticks,
+ *   and because no DT group references offset 0x9bc, the kernel never re-touches
+ *   the pad, so 0x24 survives into Linux.
  *
- * HOW THE MUX GETS APPLIED (the part that actually works on 6.x):
- *   The pin state must be claimed as the "default" pinctrl of a node that is
- *   GUARANTEED to probe at boot, otherwise nothing writes 0x24 and the pad
- *   keeps its reset value 0x28 (mode 0). Two earlier forms FAILED on this
- *   image (board #10/#14):
- *     - bone-pinmux-helper consumer: driver is a no-op on 6.12 (node loads,
- *       pin unchanged).
- *     - a stray child node with a bare `pinctrl-hog;` boolean: `pinctrl-hog`
- *       is NOT a property the mainline pinctrl core recognizes, so nothing
- *       ever referenced the state and it was never applied.
- *   The RELIABLE form: make the pinmux controller itself the consumer of the
- *   state via its own pinctrl-0 + pinctrl-names="default". pinctrl-single
- *   always probes, so its default state is always applied at controller
- *   probe -- before any peripheral or userspace can touch the pad. This is
- *   the canonical "boot-time pinmux" pattern on AM335x.
+ *   Put this ONE line in the BOOT-PARTITION uEnv.txt (mmc1p1, mounted at
+ *   /boot/firmware/uEnv.txt) -- U-Boot's `uenvcmd` check reads that file BEFORE
+ *   `Running uname_boot`:
  *
- * The PRU firmware (pru1_servo.pru1.c) does NOT touch the mux -- it relies on
- * this overlay to put the pad in mode 4, then it just drives r30.1.
+ *       uenvcmd=mw.l 0x44E109BC 0x24
+ *
+ *   (And ensure no `dtb_overlay=pru_p9_29.dtbo` line remains in /boot/uEnv.txt.)
+ *
+ * P9_29 = ball R28 = gpmc_csn3 = GPIO3_21 = gpiochip3 line 21 = pin 111.
+ * Conf register: Control-Module offset 0x9BC (phys 0x44E109BC).
+ * Mode 4 => PRU0 r30.1. Register value 0x24 = mode 4, pull-down enabled,
+ * input buffer off (output-only).
+ *
+ * Verify after reboot:
+ *   sudo grep 9bc /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins
+ *   -> expect "pin 111 (PIN111) 0:? 44e109bc 00000024 pinctrl-single"
  */
 
+/* Retained for reference only -- NOT applied (it does not work on 6.x). */
 &am33xx_pinmux {
-	/* Make the controller itself consume our state at probe (auto-hog). */
-	pinctrl-names = "default";
-	pinctrl-0 = <&pru_p9_29_pins>;
-
 	pru_p9_29_pins: pinmux_pru_p9_29_pins {
 		pinctrl-single,pins = <
 			0x9bc 0x24  /* P9_29 (gpmc_csn3) -> Mode 4 (PRU0 r30.1), pull-down */
