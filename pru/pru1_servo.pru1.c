@@ -74,12 +74,15 @@ int main(void)
     volatile uint32_t *shared = (volatile uint32_t *)PRU_SHARED_RAM;
     uint32_t pulse_us;
 
-    /* Clear STANDBY_INIT in SYSCFG so the PRU's r30 outputs are NOT
-       tri-stated and actually reach the pad. (PRU0 CFG base + 0x4;
-       STANDBY_INIT = bit 4.) The pinmux to mode 4 is set by ARM
-       (arm_write_p929) because the PRU OCP master can't write the
-       Control Module on this kernel. */
-    (*(volatile uint32_t *)(PRU0_CFG_BASE + 0x4)) &= ~(1u << 4);
+    /* Clear STANDBY_INIT so the PRU's r30 outputs are NOT tri-stated and
+       actually reach the pad. CRITICAL: from PRU *core* code this MUST be the
+       PRU-LOCAL CFG address 0x26004, NOT the global/ARM address 0x4A322004.
+       A global write routes through the PRU OCP master, which STANDBY_INIT
+       itself gates -- so writing the global address to clear STANDBY_INIT is a
+       no-op and r30 stays floating (servo dead until you touch the bare wire).
+       The local write bypasses OCP and actually takes effect. (Reference:
+       pru0_servo.pru0.c uses 0x00026004 and works.) */
+    (*(volatile uint32_t *)0x00026004) &= ~(1u << 4);
 
     /* Start with the pin LOW. */
     __R30 &= ~SERVO_BIT;
