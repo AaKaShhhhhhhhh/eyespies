@@ -74,15 +74,13 @@ int main(void)
     volatile uint32_t *shared = (volatile uint32_t *)PRU_SHARED_RAM;
     uint32_t pulse_us;
 
-    /* Clear STANDBY_INIT so the PRU's r30 outputs are NOT tri-stated and
-       actually reach the pad. CRITICAL: from PRU *core* code this MUST be the
-       PRU-LOCAL CFG address 0x26004, NOT the global/ARM address 0x4A322004.
-       A global write routes through the PRU OCP master, which STANDBY_INIT
-       itself gates -- so writing the global address to clear STANDBY_INIT is a
-       no-op and r30 stays floating (servo dead until you touch the bare wire).
-       The local write bypasses OCP and actually takes effect. (Reference:
-       pru0_servo.pru0.c uses 0x00026004 and works.) */
-    (*(volatile uint32_t *)0x00026004) &= ~(1u << 4);
+    /* Clear STANDBY_INIT (CFG SYSCFG bit 0 -- NOT bit 4, which is SUB_MWAIT)
+       so the PRU's r30 outputs are NOT tri-stated and actually reach the pad.
+       From PRU core code this uses the PRU-LOCAL CFG address 0x26004. If this
+       bit is left set, r30 is high-Z and P9_29 floats (servo dead until you
+       touch the bare wire). Arm-side arm_write_p929 also clears it via /dev/mem
+       as a belt-and-suspenders measure. */
+    (*(volatile uint32_t *)0x00026004) &= ~1u;
 
     /* Start with the pin LOW. */
     __R30 &= ~SERVO_BIT;

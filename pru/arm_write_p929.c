@@ -41,6 +41,7 @@
 
 #define PRU_SHARED_PHYS    0x4A310000u   /* 12KB PRU<->ARM shared RAM      */
 #define CONTROL_MODULE_PHYS 0x44E10000u  /* AM335x pinmux / conf registers */
+#define PRU0_CFG_PHYS      0x4A322000u   /* PRU0 control/status reg block  */
 #define DEFAULT_CONF_OFF   0x9BCu        /* P9_29 (ball R28) conf offset    */
 #define MAP_SIZE           0x1000u
 
@@ -79,6 +80,21 @@ int main(int argc, char **argv)
     uint32_t mux_rb = *conf;              /* immediate read-back (did it stick?) */
     munmap(cmap, MAP_SIZE);
 
+    /* (1b) Belt-and-suspenders: clear STANDBY_INIT in the PRU0 CFG SYSCFG
+       (phys 0x4A322004, bit 0) from ARM. If this bit is set the PRU's r30
+       outputs are tri-stated (high-Z) and P9_29 floats -- the servo stays dead
+       until you touch the bare wire. The firmware clears it too, but clearing
+       it from ARM as well guarantees the pin is live even with a stale fw.
+       ARM CAN reach the PRU CFG block (only the Control Module is OCP-gated). */
+    void *prucfg = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
+                        fd, PRU0_CFG_PHYS);
+    if (prucfg == MAP_FAILED) { perror("mmap pru0 cfg"); close(fd); return 1; }
+    volatile uint32_t *syscfg = (volatile uint32_t *)((char *)prucfg + 0x4);
+    uint32_t scfg_before = *syscfg;
+    *syscfg = scfg_before & ~1u;        /* clear STANDBY_INIT (bit 0) */
+    uint32_t scfg_rb = *syscfg;
+    munmap(prucfg, MAP_SIZE);
+
     /* (2) write the pulse width into PRU shared RAM word 0 */
     void *smap = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
                       fd, PRU_SHARED_PHYS);
@@ -91,6 +107,8 @@ int main(int argc, char **argv)
 
     printf("MUX   : before 0x%08X -> wrote 0x24 to 0x%08X (offset 0x%03X) -> readback 0x%08X\n",
            mux_before, conf_phys, conf_off, mux_rb);
+    printf("SYSCFG: before 0x%08X -> cleared STANDBY_INIT (bit0) @ 0x%08X -> readback 0x%08X\n",
+           scfg_before, PRU0_CFG_PHYS + 0x4, scfg_rb);
     printf("PULSE : wrote %lu us to PRU shared RAM @ 0x%08X -> readback %u\n",
            us, PRU_SHARED_PHYS, pulse_rb);
     printf("Verify mux with: sudo grep %03X /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins\n",

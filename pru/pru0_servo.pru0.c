@@ -27,8 +27,11 @@ int main(void)
 {
     uint32_t width;
 
-    /* Clear STANDBY_INIT so PRU outputs reach external pin logic */
-    PRU_CFG_SYSCFG &= ~(1U << 4);
+    /* Clear STANDBY_INIT (CFG SYSCFG bit 0 -- NOT bit 4, which is SUB_MWAIT)
+       so the PRU's r30 outputs are NOT tri-stated and actually reach the pad.
+       Leaving STANDBY_INIT set is what makes P9_29 float (servo dead until you
+       touch the bare wire). */
+    PRU_CFG_SYSCFG &= ~1U;
 
     while (1) {
         /* Continuous sweep 1ms (-90 deg) -> 2ms (+90 deg) */
