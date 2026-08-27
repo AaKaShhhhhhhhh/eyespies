@@ -88,14 +88,15 @@ int main(int argc, char **argv)
         snprintf(cmd, sizeof(cmd), "devmem2 0x44E10%03lX 2>/dev/null", conf_of(pin));
         FILE *pf = popen(cmd, "r");
         char buf[256];
-        if (pf && fgets(buf, sizeof(buf), pf)) {
-            printf("devmem2: %s", buf);
-            /* devmem2 prints: "Value at address 0x44E109BC: 0x00000024"
-               Find the last ':' (the value separator) and parse the hex after it. */
-            char *colon = strrchr(buf, ':');
-            if (colon && sscanf(colon + 1, " 0x%x", &val) == 1) got = 1;
+        if (pf) {
+            /* devmem2 prints 3 lines; loop so we don't stop at "/dev/mem opened." */
+            while (fgets(buf, sizeof(buf), pf)) {
+                printf("devmem2: %s", buf);
+                char *colon = strrchr(buf, ':');
+                if (colon && sscanf(colon + 1, " 0x%x", &val) == 1) got = 1;
+            }
+            pclose(pf);
         }
-        if (pf) pclose(pf);
     }
     if (!got) {
         char cmd[256];
@@ -106,8 +107,9 @@ int main(int argc, char **argv)
         char buf[256];
         if (pf && fgets(buf, sizeof(buf), pf)) {
             printf("pinctrl: %s", buf);
-            char *sp = strrchr(buf, ' ');
-            if (sp && sscanf(sp + 1, "%x", &val) == 1) got = 1;
+            /* pin 111 (PIN111) 0:? 44e109bc 00000047 pinctrl-single
+               -> value is the token BEFORE the last one ("pinctrl-single"). */
+            if (sscanf(buf, "pin %*d ( %*[^)] ) %*s %*x %x %*s", &val) == 1) got = 1;
         }
         if (pf) pclose(pf);
     }
