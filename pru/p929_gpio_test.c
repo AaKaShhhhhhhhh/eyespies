@@ -77,35 +77,58 @@ int main(int argc, char **argv)
         if (!strcmp(PINS[i].name, pin)) { p = &PINS[i]; break; }
     if (!p) { fprintf(stderr, "unknown pin '%s' (known: P9_29 P9_30 P9_31 P9_27 P9_28 P8_45 P8_46)\n", pin); return 1; }
 
-    /* Read the live mux for this pin from pinctrl debugfs (read allowed). */
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd),
-             "grep -i %lx /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins 2>/dev/null",
-             conf_of(pin));
-    FILE *pf = popen(cmd, "r");
-    char buf[256];
-    int gpio_mode = 0;   /* 1 if mux byte looks like GPIO (0x07/0x27/0x37/0x47) */
-    if (pf && fgets(buf, sizeof(buf), pf)) {
-        /* value is the last 8 hex digits before "pinctrl-single" */
-        unsigned int val = 0;
-        char *sp = strrchr(buf, ' ');
-        if (sp && sscanf(sp+1, "%x", &val) == 1) {
-            int mode = val & 0x7;
-            printf("mux for %s (conf 0x%03lx): 0x%08X (mode %d)\n", pin, conf_of(pin), val, mode);
-            if (mode == 7) gpio_mode = 1;
+    /* Read the LIVE mux for this pin. We have PROVEN devmem2 reads work on this
+       board (readback 0x24/0x28 earlier), so use it as primary; fall back to the
+       pinctrl debugfs grep if devmem2 is missing. Either way we ALWAYS print the
+       real value so we are never blind about what mode the pad is actually in. */
+    unsigned int val = 0;
+    int got = 0;
+    {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "devmem2 0x44E10%03lX 2>/dev/null", conf_of(pin));
+        FILE *pf = popen(cmd, "r");
+        char buf[256];
+        if (pf && fgets(buf, sizeof(buf), pf)) {
+            printf("devmem2: %s", buf);
+            /* devmem2 prints: "Value at address 0x44E109BC: 0x00000024"
+               Find the last ':' (the value separator) and parse the hex after it. */
+            char *colon = strrchr(buf, ':');
+            if (colon && sscanf(colon + 1, " 0x%x", &val) == 1) got = 1;
         }
-        pclose(pf);
-    } else {
-        printf("mux read failed (debugfs?) for %s; assuming NOT gpio mode.\n", pin);
+        if (pf) pclose(pf);
     }
+    if (!got) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd),
+                 "grep -i 44e10%03lx /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins 2>/dev/null",
+                 conf_of(pin));
+        FILE *pf = popen(cmd, "r");
+        char buf[256];
+        if (pf && fgets(buf, sizeof(buf), pf)) {
+            printf("pinctrl: %s", buf);
+            char *sp = strrchr(buf, ' ');
+            if (sp && sscanf(sp + 1, "%x", &val) == 1) got = 1;
+        }
+        if (pf) pclose(pf);
+    }
+    if (!got)
+        printf("  (could not read mux for %s via devmem2 or debugfs)\n", pin);
 
-    if (!gpio_mode) {
-        printf("[ABORT] %s is NOT in GPIO mode 7. A GPIO toggle cannot reach the pad.\n", pin);
-        printf("        Fix: set U-Boot uenvcmd to write 0x47 to conf 0x%03lx, then reboot:\n", conf_of(pin));
-        printf("          sudo sed -i '/^uenvcmd=/d' /boot/firmware/uEnv.txt\n");
-        printf("          printf 'uenvcmd=mw.l 0x44E10%03lX 0x47\\n' | sudo tee -a /boot/firmware/uEnv.txt\n", conf_of(pin));
+    int mode = got ? (int)(val & 0x7) : -1;
+    if (got)
+        printf("mux for %s (conf 0x%03lx) = 0x%08X -> mode %d %s\n",
+               pin, conf_of(pin), val, mode, (mode == 7) ? "(GPIO ok)" : "(NOT gpio)");
+
+    if (mode != 7) {
+        printf("[ABORT] %s is NOT in GPIO mode 7", pin);
+        if (got) printf(" (actual mode %d, conf 0x%03lx = 0x%08X)", mode, conf_of(pin), val);
+        printf(".\n");
+        printf("        A GPIO toggle cannot reach the pad in this mode.\n");
+        printf("        Paste-safe fix (sed swaps only the value digit, no long line to mangle):\n");
+        printf("          sudo sed -i '/^uenvcmd=/s/0x[0-9A-Fa-f]*$/0x47/' /boot/firmware/uEnv.txt\n");
+        printf("          grep uenvcmd /boot/firmware/uEnv.txt   # VERIFY it shows 0x47\n");
         printf("          sudo reboot   ;  then: sudo ./p929_gpio_test %d %s\n", seconds, pin);
-        printf("        After the test, restore: uenvcmd=mw.l 0x44E10%03lX 0x24 ; reboot\n", conf_of(pin));
+        printf("        Restore after test: sudo sed -i '/^uenvcmd=/s/0x47/0x24/' /boot/firmware/uEnv.txt ; sudo reboot\n");
         return 2;
     }
 
