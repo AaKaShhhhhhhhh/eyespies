@@ -373,6 +373,64 @@ sudo cat /sys/kernel/debug/gpio | grep -i 117   # (empty) -> pin owner = nobody
 ```
 - Status: bisect tool fixed (libgpiod); procedure corrected (uenvcmd 0x47 for GPIO
   test, `pru1_servo.pru1.out` for PRU test); **run pending on board.**
+
+---
+
+## 14. BOARD #24 — "P9_29 may be input-only / try P8" hypothesis reviewed
+
+### User observation
+- Step A (GPIO 50 Hz toggle on P9_29) **did NOT move the servo**.
+- Hypothesis raised: P9_29 might be PRU-input-only; maybe P8 header should be used.
+
+### Verification against TRM / BBB SRM (NOT a guess)
+- **Ball R28 = P9_29, mode 4 = `pr1_pru0_pru_r30_1`** — a documented **PRU0 direct
+  OUTPUT**, one of the standard BBB PRU0 pins (P9_29/30/31 are all PRU0 r30
+  outputs in mode 4). It is **NOT input-only**. The "input-only" hypothesis is
+  **rejected** by the pinmux table.
+- **P8_45 / P8_46 are PRU1 pins** (mode 5 = `pr1_pru1_pru_r30_0/1`), not PRU0. So
+  moving to P8 means switching to PRU1 (mux `0x25`, firmware for PRU1). It is a
+  valid tie-breaker but is NOT the "correct" PRU0 pin — P9_29 already is.
+
+### Most likely reason Step A failed (the real bug in the test, not the pin)
+- The GPIO bisect requires the pad in **GPIO mode 7**, set at boot via
+  `uenvcmd=mw.l 0x44E109BC 0x47` + **reboot**. If the user ran `p929_gpio_test`
+  while P9_29 was still in PRU mode 4 (`0x24`), libgpiod's GPIO write **never
+  reaches the physical pad** (it is routed to the PRU). The old tool only WARNed;
+  it still "ran" and reported nothing moved. That alone explains Step A.
+- **Hand-touch ambiguity:** if the bare *servo-side* wire was touched (not P9_29
+  itself), EMI on the floating servo signal would move it regardless of P9_29's
+  state. So hand-touch does NOT prove the wire is in P9_29.
+
+### Fix shipped this session
+- `p929_gpio_test.c` rewritten to accept a **pin NAME** (`P9_29`, `P9_30`, `P9_31`,
+  `P9_27`, `P9_28`, `P8_45`, `P8_46`) and a header-pin→(chip,line) table. It now
+  **reads the live mux** for that pin and **ABORTS** (printing the exact U-Boot
+  fix) if the pad is not in GPIO mode 7 — so a mis-muxed run can no longer
+  silently report "didn't move". Uses `gpiod_chip_open_by_name`.
+- This lets the user test P9_29 (correctly, in GPIO mode) AND P8 in one tool.
+
+### Tie-breaker plan (do in order on the board)
+```bash
+cd ~/eyespies/pru && git pull && make
+# 1) Test P9_29 PROPERLY (in GPIO mode 7):
+#    sudo sed -i '/^uenvcmd=/d' /boot/firmware/uEnv.txt
+#    printf 'uenvcmd=mw.l 0x44E109BC 0x47\n' | sudo tee -a /boot/firmware/uEnv.txt
+#    sudo reboot
+#    sudo ./p929_gpio_test 4 P9_29
+#      -> servo MOVES  => wire is in P9_29, P9_29 GPIO works => PRU path bug remains
+#      -> servo STILL  => wire NOT in P9_29 (or servo/power dead) => check wiring
+#    (restore mux afterwards: uenvcmd 0x44E109BC 0x24; reboot)
+#
+# 2) If P9_29 still dead, test a P8 PRU pin (PRU1) the same way:
+#    printf 'uenvcmd=mw.l 0x44E108AC 0x47\n' | sudo tee -a /boot/firmware/uEnv.txt  # P8_46 conf 0x9ac
+#    sudo reboot
+#    sudo ./p929_gpio_test 4 P8_46
+#      -> if P8_46 moves it, the servo+power+wire are fine and P9_29 pad is the issue;
+#         then pivot the PRU firmware to PRU1 mode 5 (0x25) on P8_46.
+```
+- Status: tool rewritten + pushed; **tie-breaker run pending on board.**
+- Note: P8_45/46 conf offsets used above (0x9b0 / 0x9ac) are per the AM335x ball
+  table; verify with `gpioinfo gpiochip2` on the board before trusting the P8 run.
 - Files changed this session (uncommitted on Mac): `p929_gpio_test.c` (libgpiod),
   `Makefile` (`-lgpiod` in p929_gpio_test rule).
 
