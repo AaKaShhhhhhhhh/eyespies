@@ -30,8 +30,12 @@
    ========================================================================= */
 
 /* ---- AM335x memory map (from TRM) ---------------------------------------- */
-#define PRU0_CFG_BASE    0x4A322000u   /* PRU0 control/status registers      */
-#define PRU_SHARED_RAM   0x4A310000u   /* 12KB shared with ARM -> mailbox    */
+#define PRU0_CFG_BASE    0x4A322000u   /* PRU0 control/status registers (global) */
+/* PRU LOCAL data-RAM address. The PRU core sees its 12KB shared RAM at
+   0x00010000 (NOT the global 0x4A310000 -- that is ARM's view and a load
+   from it inside the PRU faults the core, halting main() before the PWM
+   loop). 12KB = 0x3000 bytes, valid range 0x00010000..0x00012FFF. */
+#define PRU_SHARED_RAM   0x00010000u   /* PRU-local view of shared RAM       */
 
 #define SERVO_BIT  (1u << 1)   /* r30.1 -> P9_29 on PRU0 (once muxed to mode 4) */
 

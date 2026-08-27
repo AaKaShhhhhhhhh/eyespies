@@ -34,6 +34,7 @@ CFLAGS += -I/usr/lib/ti/pru-software-support-package-v6.3/include/am335x
 
 all: pru0_servo.out servo_steady.out hold_high.out blink.out \
      gpio_hold gpio_read servo_pwm_test arm_write_p929 pru1_servo.pru1.out \
+     pru_const_high.pru0.out \
      p929_gpio_test syscfg_probe
 
 # Real servo firmware -- PRU0 drives P9_29 via r30.1. The pad is muxed to
@@ -46,6 +47,13 @@ all: pru0_servo.out servo_steady.out hold_high.out blink.out \
 #   sudo ./arm_write_p929 1500                   # center pulse
 pru1_servo.pru1.out: pru1_servo.pru1.c
 	pru-gcc -O2 -Wall -mmcu=am335x.pru0 -o $@ $<
+
+# Isolation firmware: drives P9_29 (r30.1) as a 0.5 Hz square wave with NO
+# memory reads (no shared RAM / OCP), so a bus fault cannot halt it. Used to
+# prove the PRU pad reaches P9_29 when muxed to mode 4 (see PRU_SERVO_DEBUG_LOG
+# board #29). If the servo swings once per second -> GPO reaches the pad.
+pru_const_high.pru0.out: pru_const_high.pru0.c resource_table_empty.h
+	pru-gcc -I/usr/lib/ti/pru-software-support-package-v6.3/include/am335x -O2 -Wall -mmcu=am335x.pru0 -o $@ $<
 
 # Real servo firmware -- PRU emits 50 Hz PWM sweep on GPIO0_19 (P9_16).
 pru0_servo.out: pru0_servo.pru0.c resource_table_empty.h
