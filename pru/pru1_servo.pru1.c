@@ -17,8 +17,9 @@
    0, GPIO) after the firmware ran. So the mux is now set from ARM/Linux
    (arm_write_p929 writes 0x24 via /dev/mem, which DOES reach 0x44E10000),
    and this firmware ONLY:
-     - clears STANDBY_INIT so r30 is not tri-stated, and
      - drives r30.1 (P9_29) with a 50 Hz servo pulse from shared RAM.
+     (STANDBY_INIT / SYSCFG bit0 is a read-only PRCM status bit -- proven it
+      cannot be cleared by writes; it does NOT gate r30, so no clear is done.)
 
    The PRU is now a "dumb PWM" -- no pinmux access, no kernel cooperation
    beyond the loader. Fully self-contained for the PWM part.
@@ -74,13 +75,8 @@ int main(void)
     volatile uint32_t *shared = (volatile uint32_t *)PRU_SHARED_RAM;
     uint32_t pulse_us;
 
-    /* Clear STANDBY_INIT (CFG SYSCFG bit 0 -- NOT bit 4, which is SUB_MWAIT)
-       so the PRU's r30 outputs are NOT tri-stated and actually reach the pad.
-       From PRU core code this uses the PRU-LOCAL CFG address 0x26004. If this
-       bit is left set, r30 is high-Z and P9_29 floats (servo dead until you
-       touch the bare wire). Arm-side arm_write_p929 also clears it via /dev/mem
-       as a belt-and-suspenders measure. */
-    (*(volatile uint32_t *)0x00026004) &= ~1u;
+    /* (STANDBY_INIT @ 0x26004 left untouched: read-only status bit, proven
+       not writable 2026-08-26; r30 is live regardless once the PRU runs.) */
 
     /* Start with the pin LOW. */
     __R30 &= ~SERVO_BIT;

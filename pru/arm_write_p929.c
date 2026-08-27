@@ -91,7 +91,9 @@ int main(int argc, char **argv)
     if (prucfg == MAP_FAILED) { perror("mmap pru0 cfg"); close(fd); return 1; }
     volatile uint32_t *syscfg = (volatile uint32_t *)((char *)prucfg + 0x4);
     uint32_t scfg_before = *syscfg;
-    *syscfg = scfg_before & ~1u;        /* clear STANDBY_INIT (bit 0) */
+    /* STANDBY_INIT is a READ-ONLY PRCM status bit (proven 2026-08-26 via
+       syscfg_probe: writing 0 OR 1 leaves it at 0x25). It does NOT tri-state
+       r30. We do NOT write it -- only read for diagnostics. */
     uint32_t scfg_rb = *syscfg;
     munmap(prucfg, MAP_SIZE);
 
@@ -107,7 +109,7 @@ int main(int argc, char **argv)
 
     printf("MUX   : before 0x%08X -> wrote 0x24 to 0x%08X (offset 0x%03X) -> readback 0x%08X\n",
            mux_before, conf_phys, conf_off, mux_rb);
-    printf("SYSCFG: before 0x%08X -> cleared STANDBY_INIT (bit0) @ 0x%08X -> readback 0x%08X\n",
+    printf("SYSCFG: before 0x%08X -> READ-ONLY status bit (no clear) @ 0x%08X -> readback 0x%08X\n",
            scfg_before, PRU0_CFG_PHYS + 0x4, scfg_rb);
     printf("PULSE : wrote %lu us to PRU shared RAM @ 0x%08X -> readback %u\n",
            us, PRU_SHARED_PHYS, pulse_rb);

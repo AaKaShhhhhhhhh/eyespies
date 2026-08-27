@@ -6,8 +6,6 @@ register uint32_t __R30 __asm__("r30");
 #define SERVO_BIT (1U << 1) /* P9_29 on PRU1 */
 #define PERIOD_US 20000u    /* 20 ms / 50 Hz */
 
-#define PRU_CFG_SYSCFG (*(volatile uint32_t *)0x00026004)
-
 static inline void delay_us(uint32_t us)
 {
     while (us--) {
@@ -27,11 +25,11 @@ int main(void)
 {
     uint32_t width;
 
-    /* Clear STANDBY_INIT (CFG SYSCFG bit 0 -- NOT bit 4, which is SUB_MWAIT)
-       so the PRU's r30 outputs are NOT tri-stated and actually reach the pad.
-       Leaving STANDBY_INIT set is what makes P9_29 float (servo dead until you
-       touch the bare wire). */
-    PRU_CFG_SYSCFG &= ~1U;
+    /* NOTE: STANDBY_INIT (CFG SYSCFG bit 0 @ 0x26004) is a READ-ONLY status bit
+       (PRCM standby handshake). Proven 2026-08-26 via syscfg_probe: writing 0 OR
+       1 leaves it at 0x25. It does NOT tri-state r30 -- r30 is live whenever the
+       PRU runs and P9_29 is muxed to a PRU mode. The old clear line was a no-op
+       and has been removed. */
 
     while (1) {
         /* Continuous sweep 1ms (-90 deg) -> 2ms (+90 deg) */
