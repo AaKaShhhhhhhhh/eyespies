@@ -17,20 +17,24 @@
 #   P9_16 (GPIO0_19) is driven by pru0_servo.pru0.c via GPIO0 OCP writes
 #   (built for PRU0), or by the userspace servo_pwm_test.c.
 #
-# Pinmux note (your kernel 6.x image) — HARD-WON:
+# Pinmux note (your kernel 6.x image) — HARD-WON, SOLVED:
 #   config-pin is dead, devmem is blocked (CONFIG_STRICT_DEVMEM), PRU OCP
-#   writes to the Control Module are dropped, AND ARM /dev/mem writes to the
-#   Control Module read back unchanged (0x28 instead of 0x24). The ONLY working
-#   way to mux P9_29 to PRU mode 4 is a device-tree overlay with kernel
-#   authority. Use pru_p9_29.dts (offset 0x9BC, value 0x24, mode 4 = PRU0).
-#   Build + load it, THEN load the firmware + run arm_write_p929. See
-#   PRU_SERVO_DEBUG_LOG.md § "P9_29 device-tree overlay notes".
+#   writes to the Control Module are dropped, ARM /dev/mem writes to the
+#   Control Module read back unchanged (0x28 instead of 0x24), and NO DT
+#   overlay shape works on 6.12 (bone-pinmux-helper no-op, pinctrl-hog no-op,
+#   &ocp self-cycle, &pruss "no pins entries"). The ONLY working way to mux
+#   P9_29 to PRU mode 4 is a U-Boot `uenvcmd` register write set at every boot:
+#       printf 'uenvcmd=mw.l 0x44E109BC 0x24\n' | sudo tee -a /boot/firmware/uEnv.txt
+#   Confirmed: post-boot `grep 9bc .../pins` -> `pin 111 ... 44e109bc 00000024`.
+#   The pru_p9_29.dts overlay is RETIRED (kept only as a record). See
+#   PRU_SERVO_DEBUG_LOG.md §2/§5/§9a.
 # ===========================================================================
 
 CFLAGS += -I/usr/lib/ti/pru-software-support-package-v6.3/include/am335x
 
 all: pru0_servo.out servo_steady.out hold_high.out blink.out \
-     gpio_hold gpio_read servo_pwm_test arm_write_p929 pru1_servo.pru1.out
+     gpio_hold gpio_read servo_pwm_test arm_write_p929 pru1_servo.pru1.out \
+     p929_gpio_test syscfg_probe
 
 # Real servo firmware -- PRU0 drives P9_29 via r30.1. The pad is muxed to
 # PRU mode 4 by the device-tree overlay pru_p9_29.dts (load it FIRST; see the
@@ -84,12 +88,26 @@ servo_pwm_test: servo_pwm_test.c
 arm_write_p929: arm_write_p929.c
 	gcc -O2 -Wall -o $@ $<
 
+# Linux helper: bisect tool. Muxes P9_29 to GPIO mode 7 and toggles GPIO3_21
+# (P9_29) at ~50 Hz for N seconds to confirm the wire+servo+pin respond to a
+# 3.3V square wave with NO PRU involved. If the servo moves, P9_29 is good and
+# the problem is the PRU output path. If it does not, the signal wire is not on
+# P9_29 (or servo/power dead). Build+run: gcc -O2 -o p929_gpio_test
+# p929_gpio_test.c ; sudo ./p929_gpio_test 4
+p929_gpio_test: p929_gpio_test.c
+	gcc -O2 -Wall -o $@ $<
+
+# Linux helper: probe SYSCFG STANDBY_INIT writability (proved it is read-only
+# PRCM status bit). gcc -O2 -o syscfg_probe syscfg_probe.c ; sudo ./syscfg_probe
+syscfg_probe: syscfg_probe.c
+	gcc -O2 -Wall -o $@ $<
+
 # Device-tree overlay: mux P9_29 -> PRU0 (mode 4). Build with dtc, then load
 # (see pinmux note / PRU_SERVO_DEBUG_LOG.md). Requires: sudo apt install device-tree-compiler
 pru_p9_29.dtbo: pru_p9_29.dts
 	dtc -O dtb -o $@ -b 0 -@ $<
 
 clean:
-	rm -f *.out gpio_hold gpio_read servo_pwm_test arm_write_p929 pru_p9_29.dtbo
+	rm -f *.out gpio_hold gpio_read servo_pwm_test arm_write_p929 pru_p9_29.dtbo p929_gpio_test syscfg_probe
 
 .PHONY: all clean

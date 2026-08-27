@@ -276,3 +276,33 @@ sudo ./arm_write_p929 1500           # 1000 / 1500 / 2000 to sweep
 | Servo actually moves under PRU | — | ❌ | **NOT PROVEN** — bisect in §8 pending. |
 
 **Bottom line:** The mux wall is fully solved (U-Boot `uenvcmd`). The firmware builds and loads. The remaining unknown is why `r30.1` isn't moving the servo — bisect with `p929_gpio_test` next. STANDBY_INIT is retired; do not re-chase it.
+
+---
+
+## 12. BOARD #22 — bisect tool was missing from Makefile (build fix)
+
+- User ran `git pull` (got `625ec04`) + `make`; firmware + helpers rebuilt fine.
+  `pru1_servo.pru1.out` built (1 harmless `-Wvolatile-register-var` warning, expected).
+- `sudo ./p929_gpio_test 4` → **`command not found`**. `ls` showed `p929_gpio_test.c`
+  present but **no `p929_gpio_test` binary**. Cause: `p929_gpio_test` was NOT in the
+  Makefile `all` target and had NO build rule — so `make` never compiled it.
+- Fix (Mac, committed): added `p929_gpio_test` + `syscfg_probe` to `all` and added
+  explicit `gcc` build rules; also corrected the stale Makefile header that still
+  claimed "device-tree overlay is the ONLY working mux" (it's now U-Boot `uenvcmd`).
+  `clean` updated to remove the two new binaries.
+- Verified on Mac: `make -n p929_gpio_test` → `gcc -O2 -Wall -o p929_gpio_test
+  p929_gpio_test.c`; the `.c` compiles clean. Board `git pull && make` will now
+  produce the binary.
+- Status: fix committed + pushed; **bisect run still pending on board.**
+
+### Repro for board #22+
+```bash
+cd ~/eyespies/pru
+git pull
+make                     # now builds p929_gpio_test + syscfg_probe
+sudo ./p929_gpio_test 4  # ARM GPIO toggles P9_29 at ~50 Hz; servo moves?
+sudo ./arm_write_p929 1  # re-test PRU HIGH
+sudo ./arm_write_p929 0  # re-test PRU LOW
+sudo cat /sys/kernel/debug/gpio | grep -i 117
+```
+
