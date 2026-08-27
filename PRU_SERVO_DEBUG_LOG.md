@@ -466,3 +466,41 @@ cd ~/eyespies/pru && git pull && make
 - Files changed this session (uncommitted on Mac): `p929_gpio_test.c` (libgpiod),
   `Makefile` (`-lgpiod` in p929_gpio_test rule).
 
+---
+
+## 16. BOARD #26 — GPIO-mode-7 toggle STILL aborts; root cause = uenvcmd edit not landing
+
+### Symptom (board run, user paste)
+- After pulling 3624c3c (address fix), `sudo ./p929_gpio_test 4 P9_29` STILL prints:
+  `[ABORT] P9_29 is NOT in GPIO mode 7. A GPIO toggle cannot reach the pad.`
+  (now with the CORRECT `0x44E109BC` address — so the 3624c3c fix took effect).
+- Boot log confirms `Running uenvcmd ...` happens; pin was previously proven to
+  persist `0x24` across reboots via uenvcmd. So the U-Boot mechanism WORKS.
+
+### Root-cause hypothesis (high confidence)
+- The `printf 'uenvcmd=mw.l 0x44E109BC 0x47\n' | sudo tee -a ...` line was almost
+  certainly MANGLED over serial paste (user has hit this before). If `0x47` did
+  not land in `/boot/firmware/uEnv.txt`, U-Boot applied the old/garbage value and
+  P9_29 stayed in PRU mode 4 -> tool aborts. This is consistent with every prior
+  symptom (the mux never actually changed to 0x47).
+
+### Fix shipped on Mac (commit 2ff5b50)
+- `p929_gpio_test.c`:
+  - Reads the LIVE mux via `devmem2` (proven readable on board) as primary, pinctrl
+    debugfs as fallback; ALWAYS prints the actual conf value so we are never blind.
+  - Fixed sscanf parser: devmem2 prints `Value at address 0x44E109BC: 0x00000024`;
+    parse the hex after the LAST `:`. (Earlier `%*s : 0x%x` ate the colon and FAILED
+    to parse — caught by ad-hoc C test: 0x24->mode4, 0x47->mode7, 0x37->mode7, 0x28->0.)
+  - Replaced the printf-to-uEnv fix with a PASTE-SAFE `sed` that swaps only the value
+    digit (`/^uenvcmd=/s/0x[0-9A-Fa-f]*$/0x47/`) plus a mandatory `grep uenvcmd` verify
+    step, so a mangled serial paste is caught BEFORE reboot.
+- Verified on Mac: full file compiles vs stub libgpiod (rc=0); sscanf parses real
+  devmem2 output for all four sample values. Authoritative run pending on board.
+
+### Next action (issued to user)
+- `git pull && make`, run `sudo ./p929_gpio_test 4 P9_29` ONCE to see the ACTUAL mode.
+- Then `sudo sed ... 0x47 /boot/firmware/uEnv.txt` ; `grep uenvcmd` (must show 0x47) ;
+  `sudo reboot` ; re-run. If mode 7 + servo moves -> wire/servo OK, PRU path is the bug.
+  If mode 7 + servo still dead -> wire not in P9_29 (or servo/power dead); try P8_46.
+- Status: fix pushed (2ff5b50); board tie-breaker run PENDING.
+
