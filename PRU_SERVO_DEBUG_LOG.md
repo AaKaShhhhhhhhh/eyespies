@@ -554,3 +554,51 @@ sudo ./p929_gpio_test 4 P9_29
   GPIO toggle for 4s. Report whether the servo MOVES.
 - Do NOT restore uenvcmd to 0x24 yet — we still need mode7 for the bisect.
 
+---
+
+## 19. BOARD #28 — DECISIVE BISECT: GPIO mode-7 toggle on P9_29, servo STILL dead
+
+### Board run (user paste)
+```
+$ sudo ./p929_gpio_test 4 P9_29
+devmem2: /dev/mem opened.
+devmem2: Memory mapped at address 0xb6f2f000.
+devmem2: Value at address 0x44E109BC (0xb6f2f9bc): 0x47
+mux for P9_29 (conf 0x9bc) = 0x00000047 -> mode 7 (GPIO ok)
+Toggling P9_29 (gpiochip3 line 21) at ~50 Hz for 4 s...
+Done. servo MOVED  -> ...
+      servo STILL  -> signal wire not on P9_29 (or servo/power dead).
+servo still dead
+```
+
+### VERDICT (decisive)
+- P9_29 mux IS mode 7 (0x47) -> pin correctly configured, GPIO toggle reaches the PAD.
+- ARM toggled the pad via libgpiod at ~50 Hz for 4 s.
+- Servo did NOT move.
+- Therefore: the problem is DOWNSTREAM of the pad (wiring / servo / power), NOT the
+  PRU firmware or r30 path. (If GPIO at the pad can't move it, the PRU on the same
+  pad never had a chance.) PRU is removed as prime suspect pending a wiring proof.
+
+### Caveat on the GPIO test itself
+- libgpiod userspace toggling is jittery and may not hold a clean 50 Hz / 20 ms frame.
+  A real MG90S wants a stable 50 Hz; a sloppy square wave can leave it motionless.
+  So "still dead" does not 100% acquit the wiring, but strongly implicates it.
+
+### Isolation plan issued to user (no multimeter available)
+- Test A (servo/power alive?): power servo from OnePlus 5V; with signal lead
+  DISCONNECTED from BBB, briefly touch signal lead to +5V for a split second. A live
+  MG90S usually JERKS to one extreme. Jerk => servo+power fine, fault is wiring/signal.
+  No jerk => servo or power dead. (Only a split-second touch; don't hold 5V on signal.)
+- Test B (which pin is the signal on?): P9_29 != P9_16. Earlier the servo WORKED on
+  P9_16. Strong hunch: the servo signal lead is still physically in P9_16, not P9_29,
+  which would explain BOTH the GPIO failure AND the earlier PRU failure (same pad).
+- If wire is in P9_16: move it to P9_29, reboot, re-run `p929_gpio_test 4 P9_29`.
+  If it moves -> wiring was the whole problem and PRU firmware was fine; then reload
+  `pru1_servo.pru1.out` + `arm_write_p929`.
+- If wire already in P9_29: do Test A and report whether the servo jerks.
+
+### Status
+- Bisect complete: NOT a PRU/firmware bug. Root cause is wiring or servo/power.
+- Awaiting user's pin-location check (Test B) and/or Test A jerk result.
+- uenvcmd still 0x47 (mode7); do NOT restore to 0x24 until wiring proven.
+
