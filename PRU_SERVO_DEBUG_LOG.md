@@ -504,3 +504,53 @@ cd ~/eyespies/pru && git pull && make
   If mode 7 + servo still dead -> wire not in P9_29 (or servo/power dead); try P8_46.
 - Status: fix pushed (2ff5b50); board tie-breaker run PENDING.
 
+---
+
+## 17. BOARD #27 — FALSE ABORT: P9_29 IS in GPIO mode 7; tool parser bug, servo never toggled
+
+### Board run (user paste, after uenvcmd 0x47 took effect)
+```
+$ sudo ./p929_gpio_test 4 P9_29
+devmem2: /dev/mem opened.
+pinctrl: pin 111 (PIN111) 0:? 44e109bc 00000047 pinctrl-single
+  (could not read mux for P9_29 via devmem2 or debugfs)
+[ABORT] P9_29 is NOT in GPIO mode 7.
+```
+### ROOT CAUSE = TOOL BUG, not hardware
+- The pinctrl debugfs line shows `00000047` -> P9_29 WAS in GPIO mode 7. The
+  `uenvcmd=0x47` edit landed correctly (paste-safe sed worked this time).
+- BUT the tool's mux parser was broken and falsely concluded "could not read":
+  1. devmem2 block only `fgets` the FIRST line (`/dev/mem opened.`) and never saw
+     the `Value at address 0x44E109BC: 0x00000047` line -> `got=0`.
+  2. pinctrl block did `strrchr(buf,' ')` -> grabbed the LAST token `pinctrl-single`
+     instead of `00000047`, sscanf failed -> `got=0`.
+- Both failed -> `got=0` -> code took the abort branch. The servo was NEVER toggled.
+  This was a false abort; the bisect never actually executed.
+
+### Fix shipped (commit 41e4b6f)
+- devmem2 block now loops ALL lines (parses `Value at address ...: 0x..`).
+- pinctrl block sscanf: `pin %*d ( %*[^)] ) %*s %*x %x %*s` -> reads the value token
+  BEFORE `pinctrl-single`.
+- Verified on Mac vs real board strings: devmem2 3-line -> 0x47 mode7; pinctrl
+  `00000047` -> mode7; `00000024` -> not_gpio. Full file compiles (rc=0).
+
+### Real bisect still PENDING
+- The corrected tool must be re-run to actually toggle P9_29 and report whether the
+  servo MOVES. We have NOT yet obtained the tie-breaker result.
+- If servo moves in GPIO mode7 -> wiring + servo are good; the silent PRU output is
+  a FIRMWARE/r30 path bug. If it still does not move -> wiring (signal wire not in
+  P9_29) or servo/power dead.
+
+---
+
+## 18. NEXT STEP (issued to user)
+```
+cd ~/eyespies/pru
+git pull
+make
+sudo ./p929_gpio_test 4 P9_29
+```
+- Expect: `mux for P9_29 (conf 0x9bc) = 0x00000047 -> mode 7 (GPIO ok)` then a
+  GPIO toggle for 4s. Report whether the servo MOVES.
+- Do NOT restore uenvcmd to 0x24 yet — we still need mode7 for the bisect.
+
