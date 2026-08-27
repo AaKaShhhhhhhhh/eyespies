@@ -103,9 +103,9 @@ int main(int argc, char **argv)
         printf("[ABORT] %s is NOT in GPIO mode 7. A GPIO toggle cannot reach the pad.\n", pin);
         printf("        Fix: set U-Boot uenvcmd to write 0x47 to conf 0x%03lx, then reboot:\n", conf_of(pin));
         printf("          sudo sed -i '/^uenvcmd=/d' /boot/firmware/uEnv.txt\n");
-        printf("          printf 'uenvcmd=mw.l 0x44E1%03lX 0x47\\n' | sudo tee -a /boot/firmware/uEnv.txt\n", conf_of(pin));
+        printf("          printf 'uenvcmd=mw.l 0x44E10%03lX 0x47\\n' | sudo tee -a /boot/firmware/uEnv.txt\n", conf_of(pin));
         printf("          sudo reboot   ;  then: sudo ./p929_gpio_test %d %s\n", seconds, pin);
-        printf("        After the test, restore: uenvcmd=mw.l 0x44E1%03lX 0x24 ; reboot\n", conf_of(pin));
+        printf("        After the test, restore: uenvcmd=mw.l 0x44E10%03lX 0x24 ; reboot\n", conf_of(pin));
         return 2;
     }
 

@@ -431,6 +431,38 @@ cd ~/eyespies/pru && git pull && make
 - Status: tool rewritten + pushed; **tie-breaker run pending on board.**
 - Note: P8_45/46 conf offsets used above (0x9b0 / 0x9ac) are per the AM335x ball
   table; verify with `gpioinfo gpiochip2` on the board before trusting the P8 run.
+
+---
+
+## 15. BOARD #25 — tool printed a BROKEN mux address (0x44E19BC), now fixed
+
+### Bug found in the user's paste (board #24 follow-up)
+- `p929_gpio_test 4 P9_29` correctly ABORTED (P9_29 still in PRU mode 4, not GPIO 7)
+  — proving the Step A "didn't move" was a mis-mux, exactly as predicted.
+- BUT the printed fix command was wrong:
+    `uenvcmd=mw.l 0x44E19BC 0x47`   <-- MISSING a digit (should be `0x44E109BC`)
+  My `printf` used `0x44E1%03lX` and `%03lX` padded `0x9bc` to `9BC` (3 digits),
+  dropping the leading `0`. So the address became `0x44E19BC` — a different,
+  invalid register. If copy-pasted it would have written the wrong padconf.
+- Same bug in the "restore" line (`0x44E19BC 0x24`).
+
+### Fix (on Mac, committed)
+- Changed format to `0x44E10%03lX` so `0x9bc` -> `09BC` -> full `0x44E109BC`,
+  and `0x9ac` (P8_46) -> `09AC` -> `0x44E108AC`. Verified with a standalone C
+  harness on the Mac: P9_29 => `0x44E109BC`, P8_46 => `0x44E108AC` (both correct).
+- This affects only the *printed help text* in the ABORT branch; the actual mux
+  read (grep of pinctrl debugfs) and the GPIO drive path were already correct.
+
+### Status / next action
+- Fix committed + pushed. On the board: `git pull && make`, then run the corrected
+  Step A:
+    sudo sed -i '/^uenvcmd=/d' /boot/firmware/uEnv.txt
+    printf 'uenvcmd=mw.l 0x44E109BC 0x47\n' | sudo tee -a /boot/firmware/uEnv.txt
+    sudo reboot
+    sudo ./p929_gpio_test 4 P9_29
+  - servo MOVES  => wire is in P9_29; P9_29 GPIO works; PRU path is the remaining bug
+  - servo STILL  => wire not in P9_29 (or servo/power dead); check wiring
+  - restore: `uenvcmd=mw.l 0x44E109BC 0x24` + reboot.
 - Files changed this session (uncommitted on Mac): `p929_gpio_test.c` (libgpiod),
   `Makefile` (`-lgpiod` in p929_gpio_test rule).
 
