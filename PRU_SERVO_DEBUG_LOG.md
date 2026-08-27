@@ -602,3 +602,55 @@ servo still dead
 - Awaiting user's pin-location check (Test B) and/or Test A jerk result.
 - uenvcmd still 0x47 (mode7); do NOT restore to 0x24 until wiring proven.
 
+---
+
+## 20. BOARD #29 — REVERSAL: servo/power/wire PROVEN GOOD; bug is in PRU firmware
+
+### User report (overrides #28 conclusion)
+- Yellow signal wire IS on physical P9_29. (wiring location correct)
+- Touching the bare signal wire with a hand MOVES the servo.
+  -> servo is powered AND the signal line electrically reaches the servo.
+  -> The analog chain (servo + 5V power + wire-to-P9_29) is PROVEN GOOD.
+- Therefore the earlier GPIO 50%-square test "servo dead" was a FALSE NEGATIVE:
+  a servo needs 1-2 ms pulses at 50 Hz, not a 10 ms (50%) square. The hand-touch
+  worked because the body injected real ~50 Hz hum the servo understood.
+- The "wiring broken" inference from #28 was WRONG. Prime suspect flips back to
+  the PRU firmware / r30 output path.
+
+### ROOT CAUSE FOUND in pru1_servo.pru1.c
+- Firmware reads the command from `0x4A310000` (global physical shared-RAM addr).
+- From INSIDE the PRU core, shared RAM is at LOCAL `0x00010000`, not `0x4A310000`.
+  Dereferencing the global address from the PRU is an out-of-range load that
+  FAULTS the core -> main() never reaches the PWM loop -> r30.1 never toggles ->
+  servo silent. This matches every symptom: firmware loaded, mux mode4, servo dead.
+
+### FIXES (commit b4d24a5)
+- pru1_servo.pru1.c: PRU_SHARED_RAM = 0x00010000 (PRU-local; valid 12KB range
+  0x10000..0x12FFF). ARM still writes the SAME global 0x4A310000 (its own view);
+  the two are the same physical RAM, just different address maps. arm_write_p929
+  is unchanged.
+- Added pru_const_high.pru0.out: 0.5 Hz square wave on r30.1 with ZERO memory
+  reads (no shared RAM / no OCP) so a bus fault cannot halt it. Isolation test:
+  if servo swings once/sec -> GPO reaches pad (standby/mux fine; only the shared
+  RAM address was wrong); if it stays dead -> r30 not reaching pad at all.
+
+### TEST SEQUENCE issued to user
+1. `cd ~/eyespies/pru && git pull && make`
+2. Switch pad to PRU mode 4:
+   `sudo sed -i '/^uenvcmd=/s/0x47/0x24/' /boot/firmware/uEnv.txt`
+   `grep uenvcmd /boot/firmware/uEnv.txt`  # must show 0x24
+   `sudo reboot`
+3. After reboot: `sudo ./load_pru.sh pru0 pru_const_high.pru0.out`
+   - EXPECT: servo SWINGS (slams to one extreme then back) once per ~2 s.
+   - If YES -> PRU pad works; the shared-RAM fix was the whole bug. Go to step 5.
+   - If NO  -> r30 not reaching pad (standby/tri-state/mux); report and stop.
+4. (Only if step 3 swings) Load the real sweep firmware:
+   `sudo ./arm_write_p929 1500`   # center
+   `sudo ./load_pru.sh pru0 pru1_servo.pru1.out`
+   - EXPECT: servo sweeps smoothly. (Now reads shared RAM at correct 0x10000.)
+   - Vary: `sudo ./arm_write_p929 1000` / `2000` to see end-stops.
+5. Do NOT leave uenvcmd at 0x24 for normal use unless PRU is the final driver.
+
+### Status
+- Fix pushed (b4d24a5). Awaiting board test result for pru_const_high.pru0.out.
+
