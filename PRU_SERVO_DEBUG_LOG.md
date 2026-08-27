@@ -306,3 +306,73 @@ sudo ./arm_write_p929 0  # re-test PRU LOW
 sudo cat /sys/kernel/debug/gpio | grep -i 117
 ```
 
+---
+
+## 13. BOARD #23 — bisect tool bus-faulted (GPIO3 clock gated) + wrong-firmware mistake
+
+### What the user ran
+```bash
+sudo ./p929_gpio_test 4
+  [  399.083597] Unhandled fault: external abort on non-linefetch (0x1018) at 0xb6ee1134
+  P9_29 mux: before 0x00000024 -> wrote 0x47 (GPIO mode7) -> readback 0x00000024
+  Bus error
+sudo ./arm_write_p929 1
+  ... PULSE wrote 1 us -> readback 1 ; RESULT MUX OK (0x24)
+sudo ./arm_write_p929 0
+  ... PULSE wrote 0 us -> readback 0 ; RESULT MUX OK (0x24)
+sudo cat /sys/kernel/debug/gpio | grep -i 117   # (empty) -> pin owner = nobody
+```
+
+### Decisive findings
+1. **`p929_gpio_test` bus-faulted.** `external abort on non-linefetch` at the GPIO3
+   mmap address = the **GPIO3 module clock is gated**; userspace `/dev/mem` mmap
+   cannot enable it, so touching `0x481AE000` aborts. The raw-`/dev/mem` approach is
+   dead for GPIO too. Fix: use **libgpiod** (`gpiod.h`), which goes through the
+   kernel GPIO driver (enables the clock, owns the pad). Rewrote the tool to use
+   `libgpiod`; it also prints a WARN if the mux is still `0x24` (PRU mode).
+2. **The mux write inside the test FAILED (as expected).** Tried to write `0x47`
+   (GPIO mode 7) but read back `0x24`. Confirms AGAIN: **`/dev/mem` writes to the
+   Control Module are silently dropped** on this kernel — only U-Boot `uenvcmd`
+   changes the mux. So the bisect must be done with P9_29 muxed to GPIO mode 7 AT
+   BOOT (set `uenvcmd=mw.l 0x44E109BC 0x47`, reboot), not from Linux.
+3. **Wrong-firmware mistake (important).** The user had loaded **`pru0_servo.out`**
+   (board #20) — a firmware that **ignores shared RAM and just sweeps**. So
+   `arm_write_p929 1` / `0` wrote 1 and 0 to shared RAM, but the running firmware
+   never reads it → no effect. **The firmware that RESPONDS to `arm_write_p929` is
+   `pru1_servo.pru1.out`** (PRU0-built despite the name; reads shared RAM for
+   force-HIGH/LOW/PWM). So after the GPIO bisect, the correct PRU test is:
+   load `pru1_servo.pru1.out`, then `arm_write_p929 1` / `0`.
+4. **Pin owner = nobody** (`gpioinfo`/debugfs grep 117 empty) — consistent with all
+   prior evidence; the pad just sits in mode 0/4 by base-DT/U-Boot, no driver claim.
+
+### Corrected bisect procedure
+```bash
+# Step A — GPIO bisect (needs P9_29 in GPIO mode 7, set at boot):
+#   1) sudo sed -i '/^uenvcmd=/d' /boot/firmware/uEnv.txt
+#   2) printf 'uenvcmd=mw.l 0x44E109BC 0x47\n' | sudo tee -a /boot/firmware/uEnv.txt
+#   3) sudo reboot
+#   4) cd ~/eyespies/pru && make && sudo ./p929_gpio_test 4
+#      servo MOVES -> wire+servo+pin good; problem is PRU path (step B)
+#      servo STILL -> signal wire not on P9_29 (or servo/power dead); fix wiring
+#   5) RESTORE mux: sudo sed -i '/^uenvcmd=/d' /boot/firmware/uEnv.txt
+#      printf 'uenvcmd=mw.l 0x44E109BC 0x24\n' | sudo tee -a /boot/firmware/uEnv.txt
+#      sudo reboot
+#
+# Step B — PRU path test (only if step A moved the servo):
+#   1) load the RESPONSIVE firmware:
+#        S=/sys/class/remoteproc/remoteproc1
+#        echo stop | sudo tee $S/state; sleep 0.3
+#        sudo cp pru1_servo.pru1.out /lib/firmware/am335x-pru0-fw
+#        echo am335x-pru0-fw | sudo tee $S/firmware
+#        echo start | sudo tee $S/state
+#   2) sudo ./arm_write_p929 1   # force P9_29 HIGH  (servo should slam one way)
+#      sudo ./arm_write_p929 0   # force P9_29 LOW   (servo should slam other way)
+#      sudo ./arm_write_p929 1500 # normal center pulse
+#   3) if 1/0 still don't move -> r30.1 not reaching pad (PRU path bug, narrow to
+#      pin-ownership / r30.1 ball mapping). If they DO move -> PWM timing issue.
+```
+- Status: bisect tool fixed (libgpiod); procedure corrected (uenvcmd 0x47 for GPIO
+  test, `pru1_servo.pru1.out` for PRU test); **run pending on board.**
+- Files changed this session (uncommitted on Mac): `p929_gpio_test.c` (libgpiod),
+  `Makefile` (`-lgpiod` in p929_gpio_test rule).
+

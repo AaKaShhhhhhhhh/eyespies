@@ -90,12 +90,14 @@ arm_write_p929: arm_write_p929.c
 
 # Linux helper: bisect tool. Muxes P9_29 to GPIO mode 7 and toggles GPIO3_21
 # (P9_29) at ~50 Hz for N seconds to confirm the wire+servo+pin respond to a
-# 3.3V square wave with NO PRU involved. If the servo moves, P9_29 is good and
+# 3.3V square wave with NO PRU involved. Uses libgpiod (NOT raw /dev/mem, which
+# bus-faults on the gated GPIO3 clock). If the servo moves, P9_29 is good and
 # the problem is the PRU output path. If it does not, the signal wire is not on
-# P9_29 (or servo/power dead). Build+run: gcc -O2 -o p929_gpio_test
-# p929_gpio_test.c ; sudo ./p929_gpio_test 4
+# P9_29 (or servo/power dead). NOTE: needs P9_29 muxed to GPIO mode 7 first
+# (set U-Boot uenvcmd to 0x47, reboot). Build+run:
+#   gcc -O2 -Wall -o p929_gpio_test p929_gpio_test.c -lgpiod ; sudo ./p929_gpio_test 4
 p929_gpio_test: p929_gpio_test.c
-	gcc -O2 -Wall -o $@ $<
+	gcc -O2 -Wall -o $@ $< -lgpiod
 
 # Linux helper: probe SYSCFG STANDBY_INIT writability (proved it is read-only
 # PRCM status bit). gcc -O2 -o syscfg_probe syscfg_probe.c ; sudo ./syscfg_probe
