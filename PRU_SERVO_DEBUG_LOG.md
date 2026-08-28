@@ -1407,3 +1407,24 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
   sudo ./load_pru.sh pru0 pru_servo.out
   Expect: servo now SWEEPS (PRU OCP live -> it drives GPIO0_19 PWM).
 - Status: AWAITING rebuild with STANDBY_INIT fix; expect movement.
+
+### BOARD #45: STANDBY_INIT fix compiled (size 3020) but servo STILL silent
+- Outcome: pru_servo.out rebuilt with the STANDBY_INIT clear; size went
+  3000 -> 3020 (fix present). PRU "up" but servo still did NOT move.
+- ROOT CAUSE (found via repo cross-reference, not guess): WRONG SYSCFG
+  ADDRESS. I wrote `PRU0_CFG_SYSCFG = 0x4A326004`, which is a DIFFERENT
+  ICSS sub-block — the PRU0 CFG SYSCFG is at **0x4A322004** (subsystem
+  base 0x4A322000, offset 0x4). Repo proof:
+    - PRU_GUIDE.md:265/314 -> "PRU0 CFG 0x4A322004 bit4"
+    - PRU_SERVO_DEBUG_LOG.md:78 -> "PRU0 CFG block 0x4A322000, SYSCFG +0x4"
+    - old pru1_servo.pru1.c used local 0x22004.
+  So my clear wrote to the wrong register; STANDBY_INIT on the REAL CFG
+  never cleared -> OCP master stayed gated -> GPIO writes dropped -> silent.
+  This is the actual reason for #44 AND #45.
+- FIX: PRU0_CFG_SYSCFG = 0x4A322004 (also clear bit0 for good measure).
+  Committed as the next revision after bcc1b85.
+- REBUILD + RELOAD:
+  cd ~/eyespies/pru && git pull && make pru_servo.out && \
+  sudo ./load_pru.sh pru0 pru_servo.out
+  Expect: servo SWEEPS now (OCP master truly live -> drives GPIO0_19 PWM).
+- Status: AWAITING rebuild with CORRECT CFG address; high confidence.
