@@ -95,8 +95,13 @@ int main(int argc, char **argv)
     else if (changes > 3)
         printf("RIG OK: drive pin reaches read pin through the jumper.\n");
     else
-        printf("RIG DEAD: read pin never toggled (range %d..%d). "
-               "Open wire / bad seat / mux.\n", vmin, vmax);
+        printf("RIG DEAD: drive pin toggled 0..1 but read pin stayed at %d..%d.\n"
+               "  -> the jumper is NOT conducting between the two pins, OR the\n"
+               "     pins are mis-seated / wrong pins. This is a WIRING fault,\n"
+               "     not a board fault. Re-seat the jumper on the correct pins\n"
+               "     and re-run. Do NOT conclude P9_29 is dead from this until\n"
+               "     the CONTROL rig (two GPIO pins, e.g. P8_15<->P8_13) passes.\n",
+               vmin, vmax);
 
     gpiod_line_release(ol); gpiod_line_release(il);
     gpiod_chip_close(oc); gpiod_chip_close(ic);

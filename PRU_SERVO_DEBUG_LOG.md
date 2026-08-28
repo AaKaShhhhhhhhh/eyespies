@@ -1105,3 +1105,48 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
    - transitions>3 / RIG OK            => rig proven, proceed to P9_29 test.
    NOTE: do NOT pull the wire while powered. Stop the test first, then change.
 
+### RIG SELF-TEST (hardened binary, board #37) -> 0 transitions, but PROVES WIRING FAULT
+- User did a CLEAN power cycle (unplug -> swap jumper -> plug): boot log shows
+  `Reset Source: Power-on reset has occurred` (good — no brown-out this time).
+- Board pulled 15d6cf5 and built the new loopback_self. Ran:
+  `sudo ./loopback_self gpiochip1 15 gpiochip1 28 6`
+- FULL OUTPUT:
+    sample out=0 in=0
+    sample out=0 in=0
+    sample out=0 in=0
+    sample out=0 in=0
+    sample out=0 in=0
+    sample out=1 in=0     <- drive P8_15 HIGH, read P8_13 STILL 0
+    sample out=1 in=0
+    sample out=1 in=0
+    sample out=1 in=0
+    sample out=1 in=0
+    reads=150 errors=0  raw-range=[0..0]  transitions=0
+    RIG DEAD: ...
+- DECODE (decisive):
+  - NO "FAIL request OUTPUT/INPUT" lines, errors=0 => both gpiochip1:15 (P8_15)
+    and gpiochip1:28 (P8_13) were successfully claimed as OUT and IN, and the
+    libgpiod writes to P8_15 SUCCEEDED (out=0 -> 1 actually happened).
+  - Drive pin toggled 0->1 but the read pin stayed 0 across ALL 150 samples.
+  - => the only thing between them (the jumper) is NOT conducting. The board,
+    P8_15 and P8_13 are ALL fine. This is a jumper/wiring fault (bad seat or
+    wrong pins on the dense P8 header), NOT a board fault.
+- HUGE IMPLICATION for the whole P9_29 question:
+  The original "VALID loopback #1" (board #35) used the EXACT same P8_13 read
+  pin and the EXACT same jumper method. If the jumper isn't conducting here, it
+  very likely wasn't conducting there either. => **P9_29 is NOT proven dead.**
+  Every 0-transition loopback so far is explained by a non-conducting jumper.
+- FIX: improved the loopback_self "RIG DEAD" message to explicitly say the
+  jumper is not conducting / mis-seated, and to warn NOT to conclude P9_29 is
+  dead until the control rig passes. (commit: in this push)
+- NEXT (the REAL decisive step): get a conducting jumper on P8_15<->P8_13.
+  * Re-seat the existing jumper firmly on the correct P8 pins, OR try a 3rd
+    jumper. Re-run `sudo ./loopback_self gpiochip1 15 gpiochip1 28 6`.
+  * Expected when jumper conducts: out=1 -> in=1, range=[0..1], ~30 transitions,
+    "RIG OK". THEN and ONLY THEN move to P9_29 (load gpo_self_test, jumper
+    P9_29<->P8_13, run loopback_probe 6).
+  * If still range=[0..0] with 0 errors after re-seating a known-good wire ->
+    P8_13 input path itself is broken (swap to a different read pin, e.g.
+    P8_14 = gpiochip1:14, to cross-check).
+- Status: WIRING FAULT CONFIRMED for the control rig. P9_29 verdict RE-OPENED
+  (not proven dead). No board damage. See board #37.
