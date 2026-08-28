@@ -25,12 +25,15 @@ int main(void)
 {
     uint32_t width;
 
-    /* CRITICAL FIX (board #31): clear STANDBY_INIT so r30 drives the pad.
-       While STANDBY_INIT (bit 0 of PRU CFG SYSCFG @ local 0x22004) is set, the
-       PRU tri-states its GPO -- P9_29 floats and only moves when you touch the
-       bare wire. ARM CANNOT clear this (proven 2026-08-26), but the PRU can and
-       must. The earlier "read-only / r30 is live" note was wrong (ARM-only). */
-    (*(volatile uint32_t *)0x22004) &= ~(1u << 0);
+    /* NOTE: PRU CFG SYSCFG at local 0x22004. At reset SYSCFG == 0x25, so
+       STANDBY_INIT (bit 4) is already 0 and the GPOs (r30) drive the pad
+       directly -- no PRU-side un-tri-state is needed. (An earlier "STANDBY_INIT
+       bit 0 must be cleared by the PRU" theory was WRONG: bit 0 is the read-only
+       IDLE_MODE status bit, and bit 4 is already 0 at reset.) The thing that
+       actually made P9_29 move was (1) the U-Boot uenvcmd mux to mode 4 (0x24)
+       and (2) fixing pru1_servo's shared-RAM address. This firmware just sweeps
+       r30.1 with a valid 50 Hz / 1-2 ms servo PWM. */
+    (void)(*(volatile uint32_t *)0x22004); /* touch to keep ref; no clear needed */
 
     while (1) {
         /* Continuous sweep 1ms (-90 deg) -> 2ms (+90 deg) */
