@@ -4,7 +4,7 @@
  * Drives a KNOWN-GOOD GPIO line HIGH/LOW at 5 Hz for a few seconds.
  *
  * PURPOSE: self-test the P9_29 -> P8_13 loopback rig.
- *   The loopback_probe read on P8_13 (gpiochip1 line 14) returned all zeros
+ *   The loopback_probe read on P8_13 (gpiochip1 line 28 = GPIO1_28) returned all zeros
  *   when PRU drove P9_29. That could mean (a) the jumper wasn't connected,
  *   or (b) P9_29 really isn't driving. To tell them apart, drive a pin we
  *   KNOW Linux can toggle (P8_15 = gpiochip1 line 15, default GPIO mode),
