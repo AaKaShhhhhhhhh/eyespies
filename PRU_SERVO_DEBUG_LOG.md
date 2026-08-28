@@ -1189,3 +1189,28 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
   * Do NOT try to fsck from the dead shell (sudo/ls fail). Power cycle only.
 - Status: board filesystem failure, recovery pending power cycle + boot check.
   User advised to NOT type commands into the dead shell.
+
+### BOARD #39: 3rd jumper still 0->0; wires ruled out -> mux / chip-map / placement
+- User power-cycled (after #38); board RECOVERED — got login, loopback_self ran
+  fine. => #38 was transient ext4 corruption from abrupt power loss, not
+  permanent eMMC failure. FS readable again. GOOD.
+- User ran loopback_self with a 3rd (known-good) jumper: STILL
+  out=1 in=0, range 0..0, 0 transitions. => WIRES RULED OUT (3 wires).
+- User's sharp hypothesis: "did you change the pin config at boot?"
+- CLARIFICATION: the uenvcmd line ONLY writes 0x44E109BC (P9_29). It does NOT
+  touch P8_13 (0x44E10870) or P8_15 (0x44E10840). So uenvcmd is NOT the cause
+  for these pins. BUT a dtb_overlay= in uEnv.txt could mux P8 pins.
+- REMAINING METER-FREE HYPOTHESES:
+  H1: P8_13 / P8_15 pad mux != GPIO mode (conf register not mode 7).
+  H2: gpiochip1 != GPIO1 (chip/line numbering mismatch -> wrong physical pins).
+  H3: jumper on wrong row of dense P8 header (bottom row P8_14/P8_16 instead of
+      top row P8_13/P8_15).
+- DIAGNOSTIC (read-only, safe) given to user:
+  1. cat /boot/firmware/uEnv.txt            # any dtb_overlay muxing P8?
+  2. gpiodetect                             # confirm gpiochip1 label = GPIO1
+  3. sudo devmem2 0x44E10840                # P8_15 conf; low 3 bits=mode,7=GPIO
+     sudo devmem2 0x44E10870                # P8_13 conf
+  4. placement cross-check (both rows):
+     sudo ./loopback_self gpiochip1 15 gpiochip1 28 6   # TOP row P8_13-P8_15
+     sudo ./loopback_self gpiochip1 14 gpiochip1 16 6   # BOTTOM row P8_14-P8_16
+- Status: diagnostic pending. Wires ruled out; mux/chip/placement under test.
