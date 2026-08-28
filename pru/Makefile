@@ -126,6 +126,14 @@ gpo_self_test.pru0.out: gpo_self_test.pru0.c resource_table_empty.h
 loopback_probe: loopback_probe.c
 	gcc -O2 -Wall -o $@ $< -lgpiod
 
+# Self-contained loopback / control test: drives one pin and reads another in
+# the same process (no two-shell timing race, no sampler aliasing). Use it to
+# prove the rig (jumper + read-pin + tool) is good before trusting any result
+# that depends on the PRU driving P9_29.  e.g.:
+#   sudo ./loopback_self gpiochip1 15 gpiochip1 28 6   # drive P8_15, read P8_13
+loopback_self: loopback_self.c
+	gcc -O2 -Wall -o $@ $< -lgpiod
+
 # Linux helper: drive a known-good GPIO (e.g. P8_15) to self-test the
 # P9_29->P8_13 loopback rig. If loopback_probe sees transitions when this
 # drives a jumpered pin, the rig (wire + P8_13 input + tool) is proven good.
