@@ -1254,3 +1254,39 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
    still doesn't move with pru0_servo.out, the issue is servo-side (power/
    signal wiring), not the PRU. 0 => P9_29 pad genuinely dead (rare).
 - Status: awaiting rebuilt loopback_self RIG OK, then P9_29 loopback.
+
+### BOARD #40: rebuilt loopback_self STILL shows 0..0 on P8 — but make did NOT rebuild
+- USER ran `git pull && make loopback_self && sudo ./loopback_self gpiochip1 15 28 6`
+  from e745b2f. Output STILL: out=1 in=0, range 0..0, RIG DEAD.
+- CRITICAL CATCH: the paste shows `make: 'loopback_self' is up to date.`
+  => make did NOT recompile. The old binary was executed. So the e745b2f
+  single-handle fix was NEVER actually exercised on the board. The 0..0 is
+  still the OLD tool's behavior, NOT evidence about hardware.
+- USER then gave the KEY breakthrough: "When we first moved the servo through
+  GPIO software, we toggled pin numbers until the servo moved, and it moved on
+  P9_16 = gpiochip0 line 19." => P9_16 (GPIO0_19) is the ONE pin the user has
+  PERSONALLY confirmed drives a servo. That is ground truth and kills the
+  P9_29 mux-fight: just use P9_16 for the servo.
+- CONFLICT TO NOTE: loopback_self in step 2 tests gpiochip1 15/28 = P8_13/P8_15
+  (P8 header), while the proven servo pin is gpiochip0 line 19 = P9_16 (P9
+  header). They are DIFFERENT pins. Do not conflate. To loopback-test P9_16
+  use `gpiochip0 19` as the drive chip:line (jumper P9_16 -> a read pin).
+- DECISION: pivot the servo target to P9_16 (proven, no PRU/mux needed).
+  servo_pwm_test.c already drives gpiochip0 line 19 with 50 Hz PWM sweep and
+  is the safe userspace path. P9_29 PRU path is shelved (only revisit if the
+  user wants PRU specifically).
+- SAFE PLAN (no live wire changes):
+  1. cd ~/eyespies/pru && rm -f loopback_self && make loopback_self
+     sudo ./loopback_self gpiochip1 15 gpiochip1 28 6
+     -> expect RIG OK (proves tool fixed + P8 rig good). If not, run
+        sudo ./gpio_sweep gpiochip1 15 4 and paste.
+  2. Jumper P9_16 -> P8_13 (P9_16 on P9, P8_13 on P8). Run:
+     sudo ./loopback_self gpiochip0 19 gpiochip1 28 6
+     -> RIG OK == P9_16 pad driven by libgpiod.
+  3. Remove jumper, attach servo to P9_16 (power OFF first, per hard rule),
+     power ON, then:
+     gcc -O2 -Wall -o servo_pwm_test servo_pwm_test.c -lgpiod
+     sudo ./servo_pwm_test
+     -> servo should sweep end-to-end.
+- Status: awaiting board re-run with forced rebuild (rm -f first). P9_16 chosen
+  as the servo pin. P9_29 investigation shelved unless PRU specifically wanted.
