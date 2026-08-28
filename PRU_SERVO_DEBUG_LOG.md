@@ -803,3 +803,77 @@ STEP 4 (last resort, NOT recommended) — old kernel + config-pin:
 ### Status
 - STANDBY_INIT fix pushed to all three firmwares. Awaiting board: git pull && make && reboot && Step 1.
 
+---
+
+## 23. BOARD #32 — CORRECTION + DECISIVE LOOPBACK TEST
+
+### Correction (important — two wrong theories were retired)
+1. **STANDBY_INIT "root cause" was WRONG.** SYSCFG bit 0 is the *read-only*
+   IDLE_MODE status bit, NOT STANDBY_INIT (bit 4). At reset SYSCFG == 0x25, so
+   STANDBY_INIT (bit 4) is already 0 and the PRU GPOs (r30) drive the pad
+   directly — no PRU-side un-tri-state is needed. The earlier "clear bit 0"
+   writes were a no-op on a read-only bit.
+2. **`pru_const_high` was the WRONG test to call "moving".** It sends a 1 Hz
+   (1 s HIGH / 1 s LOW) square wave. A hobby servo only responds to 50 Hz PWM
+   with a 1–2 ms pulse; a 1-second-wide level is out of range and the servo
+   ignores it. "Didn't move" with pru_const_high proved nothing about toggling.
+
+### What IS now proven (board #31/#32)
+- `uenvcmd=mw.l 0x44E109BC 0x24` applied; after reboot `devmem2 0x44E109BC`
+  reads **0x24** -> pad IS in PRU mode 4. Mux is finally, cleanly solved.
+- `pru0_servo.out` (valid 50 Hz / 1–2 ms PWM sweep on r30.1) loaded and runs.
+- Servo + power + wire-to-P9_29 are electrically good (hand-touch moved it).
+- Yet the PRU PWM does NOT move the servo.
+- The thing that ACTUALLY made P9_29 move earlier was: (a) the U-Boot mux to
+  mode 4 (0x24) and (b) fixing pru1_servo's shared-RAM address. STANDBY_INIT
+  was a red herring.
+
+### What is NOT yet known (the only remaining variable)
+Whether `r30.1` is actually producing voltage at the P9_29 PAD. The PRU is
+toggling r30 in firmware, but we have never *observed* the pad. Everything else
+(analog chain, mux, firmware logic) is now cleared. So the decisive question is
+purely: **does r30.1 reach the pad?** Stop guessing — MEASURE it.
+
+### DECISIVE LOOPBACK TEST (no meter required; just a jumper wire)
+The PRU blinks r30.1 (P9_29) at 5 Hz. We jumper P9_29 -> P8_13, read P8_13 from
+Linux, and count transitions.
+- If P8_13 TOGGLES -> r30.1 reaches the pad. The PRU output path is 100% good;
+  the servo silence is then a LEVEL issue (3.3 V GPO vs servo 5 V expectation,
+  or the servo needing a cleaner 50 Hz) and we address it at the level side
+  (e.g. a 3.3 V->5 V level shifter / common-ground re-test).
+- If P8_13 STAYS FLAT -> r30.1 is NOT driving the pad. Concrete finding: either
+  the PRU core isn't emitting GPO (subsystem/bond) or the P9_29 ball on this
+  board isn't connected to r30.1. That would be a real hardware/ball fault and
+  we pivot to P8_46 (known-good PRU ball) instead of chasing firmware further.
+
+#### Steps (on board)
+```
+cd ~/eyespies/pru && git pull && make clean && make
+# mux P9_29 to PRU mode 4 (already 0x24? confirm):
+grep uenvcmd /boot/firmware/uEnv.txt      # must show 0x24
+sudo devmem2 0x44E109BC | tail -1         # must read 0x24
+# load the 5 Hz blink firmware on PRU0:
+sudo ./load_pru.sh pru0 gpo_self_test.pru0.out
+# WITHOUT disturbing P9_29's servo wire, also jumper P9_29 -> P8_13.
+# (P8_13 must be GPIO mode 7 input; confirm mux below, set if needed.)
+# Read P8_13 for 6 s:
+sudo ./loopback_probe 6
+```
+- EXPECT: `value=1` / `value=0` lines alternating, `total transitions: ~30`,
+  `LOOPBACK OK`.
+- If `total transitions: 0` -> LOOPBACK DEAD -> report and STOP (hardware/ball).
+
+### Pin mux note for P8_13
+P8_13 default may not be GPIO mode 7. If `loopback_probe` prints
+"request input failed", mux P8_13 to mode 7 via U-Boot too:
+`uenvcmd=mw.l 0x44E10834 0x27` (P8_13 conf = 0x834, mode7 pull-disabled) — OR
+just temporarily `printf` the extra mw.l line into uEnv.txt and reboot. If you
+prefer not to touch U-Boot again, an alternative input pin already in GPIO mode
+7 (e.g. read P9_29 with `p929_gpio_test` reworked as input) can substitute; but
+the cross-chip P8_13 jumper is cleanest because P9_29 stays in PRU mode 4.
+
+### Status
+- Loopback test files pushed (gpo_self_test.pru0.c, loopback_probe.c, Makefile).
+- Awaiting board: git pull && make && loopback run. This settles r30 pad reach.
+
+
