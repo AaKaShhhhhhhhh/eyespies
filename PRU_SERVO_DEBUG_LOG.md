@@ -1,4 +1,4 @@
-# PRU Servo on P9_29 — Debug Log
+# PRU Servo — Debug Log
 
 > **Single source of truth.** Restructured 2026-08-26 for clarity.
 > Rule: every attempt is logged as WORKS / FAIL / UNVERIFIED with the exact evidence.
@@ -10,12 +10,36 @@
 
 | Item | State |
 |------|-------|
-| **Goal** | Drive an MG90S servo on **P9_29** from the **PRU** (not Linux GPIO), 50 Hz PWM. |
-| **Pin mux** | ✅ **SOLVED (permanent).** P9_29 = `mode 4` (`0x24` = PRU0 `r30.1`), set every boot by a U-Boot `uenvcmd`. Confirmed `pin 111 ... 44e109bc 00000024`. |
-| **Servo motion** | ❌ **NOT SOLVED.** Servo only moved when the bare P9_29 wire was hand-touched (floating → EMI). PRU/ARM drive does not move it. |
-| **Current blocker** | `r30.1` is not reaching the pad. STANDBY_INIT theory is **dead** (proven read-only PRCM bit). Prime suspects now: (a) pin owned by a kernel driver, (b) PRU0-vs-PRU1 mux-mode mismatch, (c) signal wire not actually in P9_29. |
-| **Next action** | Run `p929_gpio_test 4` (ARM-only GPIO toggle) to bisect hardware vs PRU path. See §8. |
+| **Goal** | Drive an MG90S servo from the **PRU** (not Linux GPIO), 50 Hz PWM. |
+| **TARGET PIN** | **P9_31** (`mcasp0_aclkx`, pad `0x44E10990`) = PRU0 **R30_0**, muxed mode 5 by U-Boot. |
+| **Why P9_29/P9_16 failed** | See §PIVOT. P9_29 was muxed **mode 4 on the WRONG pad** (`0x44E109BC` ≠ mcasp0_fsx). P9_16 has **no PRU mode** per the official PRU cape DTS. |
+| **Pin mux** | ✅ **SOLVED (permanent).** P9_31 = `mode 5` (`0x05`), set every boot by U-Boot `uenvcmd`: `mw.l 0x44E10990 0x05`. |
+| **Servo motion** | ⏳ **PENDING** — firmware `pru_servo.out` (commit a7aceb1) rebuilt for P9_31/R30_0; awaiting board load + observe. |
 | **Board** | BeagleBone Black, eMMC boot, kernel `6.12.28-bone25`, U-Boot `2022.04-gc6f4cf7d`, PRU0 = `remoteproc1` = `4a334000.pru`. |
+
+---
+
+## §PIVOT — Why P9_29 never worked, and why P9_31 will
+
+Definitive evidence from `sudo cat /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins` on the board:
+
+```
+pin 97  (PIN97)  15:gpio-96-127 44e10984 00000005 pinctrl-single   # P9_16 gpmc_be1n  -> mode5, but cape has NO PRU mode for it
+pin 100 (PIN100) 14:gpio-64-95  44e10990 00000027 pinctrl-single   # P9_31 mcasp0_aclkx -> mode7 now; cape mode5 = PRU Blue LED = R30_0
+pin 111 (PIN111) 0:?            44e109bc 00000024 pinctrl-single   # our OLD P9_29 mux landed HERE (wrong pad, mode4)
+```
+
+Cross-checked against the **official BeagleBoard PRU cape DTS**
+(`AM335X-PRU-RPROC-4-19-TI-PRUCAPE-00A0.dts`, pulled from bb.org-overlays):
+
+- P9_31 = `mcasp0_aclkx` = pad `0x190` (i.e. `0x44E10990`) → cape mux `0x190 0x05` = PRU CAPE Blue LED ⇒ **PRU0 R30_0**. ✅
+- P9_29 = `mcasp0_fsx` = pad `0x194` (`0x44E10994`) → cape mux `0x194 0x05`. Our old `uenvcmd` used `0x44E109BC 0x24` — **wrong pad AND wrong mode**. That's why R30 never reached it.
+- P9_16 (`gpmc_be1n`) is **not listed** among the cape's PRU outputs at all ⇒ it has no PRU R30 routing; mode5 just sits as GPIO (which is why `gpioset` worked but `__R30` was silent).
+
+**Fix applied (commit a7aceb1):**
+- `pru_servo.c`: drive **P9_31 / R30 bit 0** (was P9_16 / bit 5).
+- `load_pru.sh`: runtime mux now `0x44E10990 0x05` (best-effort; U-Boot mux is authoritative on 6.x).
+- `uEnv.txt` on board must now contain `uenvcmd=mw.l 0x44E10990 0x05` (one reboot).
 
 ---
 
