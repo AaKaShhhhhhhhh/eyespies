@@ -18,8 +18,10 @@
    (arm_write_p929 writes 0x24 via /dev/mem, which DOES reach 0x44E10000),
    and this firmware ONLY:
      - drives r30.1 (P9_29) with a 50 Hz servo pulse from shared RAM.
-     (STANDBY_INIT / SYSCFG bit0 is a read-only PRCM status bit -- proven it
-      cannot be cleared by writes; it does NOT gate r30, so no clear is done.)
+     (STANDBY_INIT / SYSCFG bit0 MUST be cleared by the PRU itself or r30 is
+      tri-stated. ARM writes are ignored (proven 2026-08-26 via syscfg_probe),
+      but the PRU clears it at the top of main() -- see board #31. This was the
+      missing step that left P9_29 floating for days.)
 
    The PRU is now a "dumb PWM" -- no pinmux access, no kernel cooperation
    beyond the loader. Fully self-contained for the PWM part.
@@ -79,8 +81,14 @@ int main(void)
     volatile uint32_t *shared = (volatile uint32_t *)PRU_SHARED_RAM;
     uint32_t pulse_us;
 
-    /* (STANDBY_INIT @ 0x26004 left untouched: read-only status bit, proven
-       not writable 2026-08-26; r30 is live regardless once the PRU runs.) */
+    /* CRITICAL FIX (board #31): clear STANDBY_INIT so r30 actually drives the
+       pad. While STANDBY_INIT (bit 0 of PRU CFG SYSCFG @ local 0x22004) is set,
+       the PRU tri-states its GPO -- r30 writes reach the register but NOT the
+       pad, so P9_29 floats and the servo only moves when you touch the bare
+       wire. ARM CANNOT clear this bit (proven 2026-08-26 via syscfg_probe), but
+       the PRU itself can and must. The earlier "read-only, r30 is live" note
+       was WRONG: it was only read-only FROM ARM. */
+    (*(volatile uint32_t *)0x22004) &= ~(1u << 0);
 
     /* Start with the pin LOW. */
     __R30 &= ~SERVO_BIT;

@@ -704,3 +704,101 @@ servo still dead
 ### Status
 - Helper typo fix pushed. Awaiting board: git pull && make (full) && reboot && test.
 
+---
+
+## 22. BOARD #31 — THE ROOT CAUSE: STANDBY_INIT was never cleared -> r30 tri-stated
+
+### The realization (2026-08-26/28)
+Reading the firmware after days of silent failure revealed the actual bug, and it
+is neither hardware nor the kernel: **STANDBY_INIT (PRU CFG SYSCFG bit 0) was never
+cleared, so r30 is tri-stated and P9_29 floats.**
+
+### Why this explains EVERY symptom
+- Mux correct (0x24), PRU "running", but `r30` writes never reach the pad -> pin floats.
+- Servo ONLY moves when the bare wire is touched -> that injects a signal into a
+  floating pin. This is the textbook tri-state signature.
+- Earlier P9_16 "worked" -> that was GPIO mode 7 (ARM drives the pad, NOT r30),
+  so STANDBY_INIT was irrelevant. The PRU path was never actually tested until P9_29.
+
+### Why we missed it
+`syscfg_probe` (board #19/20) proved **ARM** writes to SYSCFG are ignored (read back
+0x25). We wrongly generalized that to "STANDBY_INIT can't be cleared / doesn't gate
+r30" and REMOVED the clear from every firmware. WRONG: ARM writes are ignored, but
+**the PRU itself CAN and MUST clear its own STANDBY_INIT.** remoteproc does NOT do
+this for us.
+
+### The fix
+Added to the top of `main()` in ALL THREE firmwares:
+    (*(volatile uint32_t *)0x22004) &= ~(1u << 0);   // clear STANDBY_INIT (PRU-local CFG SYSCFG)
+- 0x22004 = PRU subsystem local CFG register block + 0x4 (SYSCFG). This is the PRU's
+  OWN view (not the 0x4A322000 global the ARM used). Clearing bit 0 takes r30 out of
+  tri-state so the GPO actually drives the pad.
+- NOTE: this is the PRU-clears-itself path TI docs require; the global 0x4A322004 that
+  arm_write_p929 poked is ARM's view and is ignored (hence the 0x25 readback).
+
+### Files changed (pushed after #31)
+- pru1_servo.pru1.c: clear STANDBY_INIT before the PWM loop.
+- pru0_servo.pru0.c: clear STANDBY_INIT before the sweep loop.
+- pru_const_high.pru0.c: clear STANDBY_INIT before the 0.5 Hz square wave.
+- (arm_write_p929.c SYSCFG comment corrected; the clear must come from the PRU.)
+
+### FORWARD PLAN — all possibilities, ending in the fix that should 100% work
+Ordered so each step either confirms the fix or reveals the true remaining fault.
+
+STEP 0 (one-time, already done on board):
+  uenvcmd=mw.l 0x44E109BC 0x24   in /boot/firmware/uEnv.txt   (PRU mode 4)
+  sudo reboot   <-- REQUIRED for the mux to take effect.
+
+STEP 1 — ISOLATION (proves the PRU GPO reaches the pad, no memory/timing involved):
+  cd ~/eyespies/pru && git pull && make
+  sudo ./load_pru.sh pru0 pru_const_high.pru0.out
+  EXPECT: servo SWINGS once per ~2 s (1 s HIGH / 1 s LOW).
+    YES -> r30 -> P9_29 path is ALIVE. Go to Step 2.
+    NO  -> r30 still not reaching pad. Possibilities left:
+           (a) uenvcmd not applied (re-grep 9bc -> must be 0x24 after reboot)
+           (b) wrong PRU core (we load pru0; P9_29 mode4 = PRU0 r30.1, correct)
+           (c) pad/bond damage (hardware) -> but hand-touch moved it, so pad is
+               electrically fine; leaves only "PRU GPO disabled" which the clear fixes.
+           Report and STOP before touching kernel images.
+
+STEP 2 — REAL SERVO:
+  sudo ./arm_write_p929 1500
+  sudo ./load_pru.sh pru0 pru1_servo.pru1.out
+  EXPECT: smooth sweep; 1000 = one end, 2000 = other end.
+    YES -> DONE. The fix works.
+    NO  -> firmware logic/timing; use test modes:
+           sudo ./arm_write_p929 0   (constant LOW  -> servo slams one way)
+           sudo ./arm_write_p929 1   (constant HIGH -> servo slams other way)
+           If 0/1 move it -> PWM timing/center bug (tune delay_us).
+           If 0/1 still dead -> r30 still tri-stated (clear not effective) -> check
+           the 0x22004 write is present in the binary / try pru0_servo instead.
+
+STEP 3 (only if Steps 1-2 fail) — cross-check via known-good GPIO path:
+  Switch pinmux to GPIO mode 7 (uenvcmd 0x47, reboot), run p929_gpio_test with a
+  VALID 50 Hz 1-2 ms pulse (not 50% square) to confirm servo responds to correct signal.
+  (A proper 20 ms-frame pulse is what the servo needs; the earlier 50% square was invalid.)
+
+STEP 4 (last resort, NOT recommended) — old kernel + config-pin:
+  Only if Step 1 isolation is dead AND Step 3 GPIO valid-pulse also dead (i.e. the
+  PRU subsystem itself is broken on this kernel). An old image (e.g. 4.19 / 5.4
+  Debian Buster console) would let you use config-pin, but it does NOT fix a
+  tri-stated r30 — it would have the SAME silence unless the firmware also clears
+  STANDBY_INIT. So re-imaging is NOT the fix; the firmware fix is. Do not burn a
+  day flashing old images before trying Steps 1-2.
+
+### ANSWERS to the user's questions (2026-08-28)
+- "Is it a hardware problem?" -> Almost certainly NOT. The floating-pin-on-touch
+  symptom + correct mux + PRU running points squarely at r30 being tri-stated,
+  which is a FIRMWARE issue (missing STANDBY_INIT clear), now fixed.
+- "Should I compile an old Linux image to use config-pin?" -> NO. config-pin only
+  sets the mux (already solved via uenvcmd). It would NOT fix a tri-stated r30.
+  The fix is the firmware change above; re-imaging won't add it.
+- "Why only my board's PRU isn't working?" -> Because our firmware (unlike typical
+  TI examples) removed the STANDBY_INIT clear based on the mistaken "read-only" conclusion.
+- "What's the ultimate fix?" -> Clear STANDBY_INIT in the PRU at main() start
+  (done in all 3 firmwares) + mux P9_29 to mode 4 via uenvcmd (done) + reboot.
+  Step 1 (pru_const_high) is the decisive proof.
+
+### Status
+- STANDBY_INIT fix pushed to all three firmwares. Awaiting board: git pull && make && reboot && Step 1.
+

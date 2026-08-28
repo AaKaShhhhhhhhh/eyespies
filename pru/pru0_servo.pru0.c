@@ -25,11 +25,12 @@ int main(void)
 {
     uint32_t width;
 
-    /* NOTE: STANDBY_INIT (CFG SYSCFG bit 0 @ 0x26004) is a READ-ONLY status bit
-       (PRCM standby handshake). Proven 2026-08-26 via syscfg_probe: writing 0 OR
-       1 leaves it at 0x25. It does NOT tri-state r30 -- r30 is live whenever the
-       PRU runs and P9_29 is muxed to a PRU mode. The old clear line was a no-op
-       and has been removed. */
+    /* CRITICAL FIX (board #31): clear STANDBY_INIT so r30 drives the pad.
+       While STANDBY_INIT (bit 0 of PRU CFG SYSCFG @ local 0x22004) is set, the
+       PRU tri-states its GPO -- P9_29 floats and only moves when you touch the
+       bare wire. ARM CANNOT clear this (proven 2026-08-26), but the PRU can and
+       must. The earlier "read-only / r30 is live" note was wrong (ARM-only). */
+    (*(volatile uint32_t *)0x22004) &= ~(1u << 0);
 
     while (1) {
         /* Continuous sweep 1ms (-90 deg) -> 2ms (+90 deg) */
