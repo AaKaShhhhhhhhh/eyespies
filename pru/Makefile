@@ -60,6 +60,13 @@ pru_const_high.pru0.out: pru_const_high.pru0.c resource_table_empty.h
 pru0_servo.out: pru0_servo.pru0.c resource_table_empty.h
 	pru-gcc -I/usr/lib/ti/pru-software-support-package-v6.3/include/am335x -O2 -Wall -mmcu=am335x.pru0 -o $@ $<
 
+# CLEAN servo firmware (2026-08-26): PRU drives P9_16 by writing the GPIO0
+# SET/CLEAR registers over its OCP master. Pin stays in default GPIO mode
+# (proven functional by the user's gpioset test), so NO pinmux change, NO
+# r30 bit guessing, NO STANDBY_INIT issue. This is the recommended build.
+pru_servo.out: pru_servo.c
+	pru-gcc -O2 -Wall -mmcu=am335x.pru0 -o $@ $<
+
 # Diagnostic: hold a STEADY 1.5 ms pulse (servo center).
 servo_steady.out: pru0_servo.pru0.c resource_table_empty.h
 	pru-gcc -I/usr/lib/ti/pru-software-support-package-v6.3/include/am335x -O2 -Wall -DSERVO_STEADY -mmcu=am335x.pru0 -o $@ $<

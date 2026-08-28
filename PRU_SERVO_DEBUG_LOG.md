@@ -1359,3 +1359,32 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
   If silent/barely moves: wiring (orientation/ground/VCC) or weak 3.3V drive —
   report and we'll check wiring + add a transistor level-shift.
 - Status: AWAITING servo_pwm_test run on P9_16 (servo attached).
+
+### BOARD #43: USER RE-RAILS THE GOAL — the point is the PRU, not GPIO demos
+- USER: "main goal is getting the PRU working." The loopback/servo_pwm_test
+  detour was a wrong turn (assistant over-corrected from the P9_29 mux fight).
+  We stop all GPIO/loopback demos. PRU driving the servo is the deliverable.
+- KEY REALIZATION: the user ALREADY proved P9_16 (GPIO0_19) is functional in
+  DEFAULT GPIO mode via `gpioset gpiochip0 19=1` moving the servo. So we do
+  NOT need to mux P9_16 to a PRU r30 mode. The PRU can instead WRITE the GPIO0
+  SET/CLEAR registers (0x44E07194 / 0x44E07190) over its OCP master. Pin stays
+  in mode 7 (GPIO); PRU generates the 50Hz PWM. No pinmux change, no r30 bit
+  guessing, no STANDBY_INIT tri-state issue.
+- NEW FIRMWARE pru/pru_servo.c: PRU0, writes GPIO0_19 via OCP, sweeps 1-2ms.
+  Makefile target `pru_servo.out` added. Load with load_pru.sh pru0.
+- NOTES on the old firmwares (why we replaced them):
+  * pru1_servo.pru1.c clears SYSCFG bit 0 -- that is the read-only IDLE_MODE
+    STATUS bit, NOT STANDBY_INIT (bit 4). Wrong fix. It was also built as
+    am335x.pru0 while its comment said "P9_29 on PRU1" -- a filename/target
+    mismatch. Retired in favor of pru_servo.c.
+  * pru0_servo.pru0.c used r30.1 (P9_29) + shared-RAM reads.
+- PLAN (no loopback, no servo_pwm_test):
+  1. On board: cd ~/eyespies/pru && git pull
+  2. Build: make pru_servo.out
+  3. Stop any running PRU: echo stop | sudo tee /sys/class/remoteproc/$(the
+     pru0 node)/state   (load_pru.sh handles this itself)
+  4. Attach servo to P9_16 (power OFF first per hard rule), power ON.
+  5. Load: sudo ./load_pru.sh pru0 pru_servo.out
+     Expect: servo sweeps end-to-end (PRU is now the source of PWM).
+  6. If silent: report dmesg tail; we'll check OE/SET and the OCP master.
+- Status: AWAITING board build + load of pru_servo.out on P9_16.
