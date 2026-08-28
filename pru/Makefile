@@ -140,6 +140,15 @@ loopback_self: loopback_self.c
 gpio_toggle: gpio_toggle.c
 	gcc -O2 -Wall -o $@ $< -lgpiod
 
+# Sweep tool: drives ONE pin and REPORTS which other pin the jumper actually
+# connects to. Removes the guesswork about which orientation the user seated the
+# 2-pin jumper (column vs row on the dense P8 header). Used after 3 wires all
+# fail in loopback_self to prove placement rather than wiring.
+#   sudo ./gpio_sweep gpiochip1 28 4     # drive P8_13, find its partner
+#   sudo ./gpio_sweep gpiochip1 15 4     # drive P8_15, find its partner
+gpio_sweep: gpio_sweep.c
+	gcc -O2 -Wall -o $@ $< -lgpiod
+
 # Device-tree overlay: mux P9_29 -> PRU0 (mode 4). Build with dtc, then load
 # (see pinmux note / PRU_SERVO_DEBUG_LOG.md). Requires: sudo apt install device-tree-compiler
 pru_p9_29.dtbo: pru_p9_29.dts

@@ -1214,3 +1214,43 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
      sudo ./loopback_self gpiochip1 15 gpiochip1 28 6   # TOP row P8_13-P8_15
      sudo ./loopback_self gpiochip1 14 gpiochip1 16 6   # BOTTOM row P8_14-P8_16
 - Status: diagnostic pending. Wires ruled out; mux/chip/placement under test.
+
+### BOARD #39b: user's gpio_sweep PROVES P8_15<->P8_13 wired; old loopback_self had a BUG
+- USER wrote their own gpio_sweep.c: drives gpiochip1:15(P8_15) and reports which
+  other chip1 line follows; result:
+    Drove gpiochip1:15. Lines that followed: gpiochip1:28  (gpio1 line 28)
+  and driving gpiochip1:28(P8_13) reported partner gpiochip1:15 (P8_15).
+- This is INDEPENDENT proof: P8_15<->P8_13 are correctly wired AND both are in
+  GPIO mode (sweep successfully requested them as in/out). The jumper is good.
+- CONTRADICTION: if the wire is real (sweep-proven), loopback_self driving
+  gpiochip1:15 and reading gpiochip1:28 MUST see in=1. Yet OLD loopback_self
+  showed in=0. => OLD loopback_self was giving a FALSE NEGATIVE (tool bug),
+  not hardware. (Earlier conclusions "wiring fault / jumper not conducting"
+  are RETRACTED for the P8_15/P8_13 case.)
+- ROOT CAUSE FOUND IN OLD CODE: old loopback_self opened the SAME chip twice
+  (oc = gpiod_chip_open_by_name("gpiochip1"); ic = gpiod_chip_open_by_name
+  ("gpiochip1")) and requested lines from two separate handles. gpio_sweep
+  (which works) opens the chip ONCE and gets both lines from that ONE handle.
+  The double-open pattern is the likely failure on this board's libgpiod.
+- FIX (commit below): rewrote loopback_self to use the PROVEN single-handle
+  pattern (ic = oc when chips match; only open a 2nd chip if in!=out chip),
+  plus a 30 ms settle (usleep) after each drive before sampling. Verified vs
+  stub: with jumper present -> out=1 in=1, range 0..1, RIG OK; absent ->
+  out=1 in=0, range 0..0, RIG DEAD. New message tells user to run gpio_sweep
+  to disambiguate tool bug vs real pin fault.
+- LESSON: the control-rig conclusion must come from the REBUILT loopback_self,
+  not the old binary. P9_29 verdict still OPEN.
+- Status: rebuilt loopback_self pushed; board must re-run it to confirm RIG OK.
+
+### NEXT STEP (fast, no reboot, safe)
+1. On board: `cd ~/eyespies/pru && git pull && make loopback_self`
+2. Keep the SAME jumper P8_15<->P8_13. Run:
+     sudo ./loopback_self gpiochip1 15 gpiochip1 28 6
+   EXPECT (proven by sweep): out=1 in=1, range 0..1, "RIG OK".
+   If so -> loopback rig is PROVEN GOOD; old 0..0 was the tool bug.
+3. THEN test P9_29: load gpo_self_test, jumper P9_29<->P8_13, run
+     sudo ./loopback_probe 6   (now 500 Hz, fixed earlier)
+   transitions>3 => P9_29 pad IS driven by PRU => PRU path works; if servo
+   still doesn't move with pru0_servo.out, the issue is servo-side (power/
+   signal wiring), not the PRU. 0 => P9_29 pad genuinely dead (rare).
+- Status: awaiting rebuilt loopback_self RIG OK, then P9_29 loopback.
