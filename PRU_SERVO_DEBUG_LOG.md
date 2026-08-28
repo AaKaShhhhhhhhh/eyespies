@@ -1471,3 +1471,34 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
   P9_16 via PRU __R30 direct-output instead of GPIO OCP (needs pinmux to PRU
   mode, a separate path we avoided).
 - Status: AWAITING rebuild with 1->0 STANDBY sequence; high conf.
+
+### BOARD #48: OCP-to-GPIO0 path DEAD — pivot to __R30 (P9_16 / R30_5)
+- LOADED 2514008 (1->0 STANDBY sequence). `devmem2 0x4A326004` -> **0x3A**
+  (bit4 STANDBY_INIT STILL 1 even after firmware's 1->0 sequence => PRU's LOCAL
+  0x00026004 write does NOT land on this 6.x image).
+- USER ran ARM-side `devmem2 0x4A326004 w 0x0` -> readback **0x20** (0x3A->0x20,
+  bit4 cleared). => The register IS software-writable, but ONLY from ARM/global
+  0x4A326004, never from the PRU's local 0x00026004 view. STANDBY is NOT
+  PRCM-locked (corrected theory).
+- ARM cleared STANDBY (0x20). Then read GPIO0 OE `0x44E07134` -> **0xFFFFFFFF**
+  (P9_16 = input). USER wrote `devmem2 0x44E07134 w 0xFFF7FFFF` -> readback
+  **0xFFF7FFFF** (bit19 cleared => P9_16 now OUTPUT at the GPIO peripheral).
+- With STANDBY clear + P9_16 = output + firmware STILL RUNNING + looping
+  SET/CLEAR on GPIO0_19 -> **SERVO DID NOT MOVE** (confirmed by user).
+- => DEFINITIVE: the PRU's OCP master cannot reach GPIO0 (0x44E07000, the
+  L4_WKUP interconnect). Every TI PRU GPIO example uses GPIO1/2/3 (L4_PER,
+  0x4804xxxx), never GPIO0, for exactly this reason. The OCP-to-GPIO0 path is
+  genuinely dead on this hardware. No more guessing.
+- PIVOT TO __R30: PRU direct GPO output. Needs NO OCP, NO SYSCFG, NO STANDBY,
+  NO OE. P9_16 = conf_gpmc_be1n = pad 0x44E10984; in MODE 5 the ball is
+  "pr1_pru0_pru_r30_5" -> PRU0 __R30 bit 5. Mux at RUNTIME (no reboot):
+      sudo devmem2 0x44E10984 w 0x05
+  (or permanent in /boot/firmware/uEnv.txt: `uenvcmd=mw.l 0x44E10984 0x05`).
+- REWROTE pru_servo.c to drive __R30 bit 5 only (50 Hz, 1.0-2.0 ms sweep).
+  Removed all OCP/CFG/STANDBY code. Updated load_pru.sh to mux P9_16 at runtime.
+- REBUILD + RELOAD:
+  cd ~/eyespies/pru && git pull && make pru_servo.out && \
+  sudo ./load_pru.sh pru0 pru_servo.out
+  (load_pru.sh now writes 0x44E10984=0x05 for you; no manual devmem needed.)
+- Status: AWAITING board rebuild + reload; if servo moves -> DONE (R30 path).
+

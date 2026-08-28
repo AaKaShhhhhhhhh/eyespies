@@ -10,9 +10,10 @@
 # Why a script (not pasted commands): pasting the cp/tee/echo steps in one
 # block loses newlines and concatenates commands (that broke your first load).
 #
-# NO config-pin / devmem / DT overlay is used. This only uses remoteproc,
-# which works on your kernel 6.x image. The firmware itself drives the pin via
-# the PRU's OCP writes to the GPIO block (see pru1_servo.pru1.c header).
+# The firmware drives P9_16 via the PRU's DIRECT GPO (__R30), which needs no
+# OCP / no SYSCFG / no STANDBY. The only pin setup required is muxing P9_16 to
+# PRU mode (mode 5 = pr1_pru0_pru_r30_5) - done at RUNTIME below via devmem2
+# (no reboot, no DT overlay). See pru_servo.c header for the rationale.
 set -e
 
 PRU="$1"
@@ -54,6 +55,18 @@ if [ "$(cat "$RPROC/state" 2>/dev/null)" = "running" ]; then
         [ "$(cat "$RPROC/state" 2>/dev/null)" = "offline" ] && break
         sleep 0.1
     done
+fi
+
+# 1b) Mux P9_16 to PRU0 R30 mode (runtime, no reboot).
+#     P9_16 = conf_gpmc_be1n = pad 0x44E10984. Mode 5 -> pr1_pru0_pru_r30_5.
+#     (The PRU's OCP master cannot reach GPIO0 on this image, so __R30 is used.)
+if [ "$PRU" = "pru0" ]; then
+    if command -v devmem2 >/dev/null 2>&1; then
+        echo "mux   -> P9_16 (0x44E10984) = mode 5 (PRU0 R30_5)"
+        sudo devmem2 0x44E10984 w 0x05 >/dev/null
+    else
+        echo "WARN  : devmem2 not found - P9_16 must already be muxed to mode 5."
+    fi
 fi
 
 # 2) Put the binary where the kernel looks for it.
