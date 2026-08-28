@@ -953,3 +953,34 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
   the jumper wire itself is bad (bridging a power pin) -> use a different wire.
 - Status: board recovered. Awaiting isolated retest (servo detached).
 
+---
+
+## 26. BOARD #35 — REBOOT RECURS EVEN WITH SERVO POWER OFF
+- User: servo 5V supply switched OFF, but servo SIGNAL (yellow) + GROUND
+  (black) wires STILL plugged into the board; jumper P9_29<->P8_13 added;
+  board made a noise and rebooted AGAIN.
+- ROOT CLARIFICATION: "servo power off" != "servo disconnected". With the red
+  wire off but yellow+black still on the board, the servo's signal pin remains
+  tied (inside the servo, via ESD diode) to its floating 5V rail; the black
+  wire provides a ground return. Bridging that to P9_29/P8_13 let current flow
+  through the diode + ground -> BBB 3.3V domain inrush -> PMIC brown-out reset.
+- SAFETY RULE (hardened): for ANY loopback test the SERVO MUST BE PHYSICALLY
+  UNPLUGGED FROM THE HEADER (all 3 wires off). Loopback only checks the PRU
+  pin and has nothing to do with the servo.
+- ABSOLUTELY-SAFE PROCEDURE (worst case = reboot, never damage):
+  0. Power off BBB; remove EVERY wire from P8/P9 (servo Y/R/B all out).
+  1. Power on; confirm clean boot (dmesg no PMIC/undervoltage).
+  2. Rig self-test (no P9_29): power OFF, jumper P8_15<->P8_13, power ON,
+       sudo ./gpio_toggle gpiochip1 15 6   (shell A)
+       sudo ./loopback_probe 6             (shell B)
+     -> expect ~30 transitions. Reboot here => bad jumper wire.
+  3. Real loopback: power OFF, move free end P8_15->P9_29 (P9_29<->P8_13),
+     servo STILL off board, power ON,
+       sudo ./load_pru.sh pru0 gpo_self_test.pru0.out
+       sudo ./loopback_probe 6
+     -> expect ~30 transitions.
+  Principle: servo 100% disconnected; insert jumper with board POWERED OFF.
+- Note: repeated self-reboot = PMIC protection, board very likely alive.
+  Stop inducing the fault; do not reconnect externally-powered servo to a pin.
+- Status: awaiting safe retest per above (servo fully unplugged).
+
