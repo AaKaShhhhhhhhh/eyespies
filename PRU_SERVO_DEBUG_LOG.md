@@ -1065,3 +1065,43 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
      settle the P9_29 question.
    - 0   -> swap the wire; if still 0, read-pin/wire fault, not P9_29.
 
+### RIG SELF-TEST RUN (loopback_self, single process) -> 0 transitions
+- After the 4e81ac6 build, user compiled and ran:
+  `sudo ./loopback_self gpiochip1 15 gpiochip1 28 6`
+  (drive P8_15, read P8_13, same process, correct timing).
+- RESULT: total transitions on read pin: 0 -> "RIG DEAD".
+- THIS IS DIFFERENT FROM THE EARLIER INVALID CONTROL: here drive+read are in
+  ONE process at the correct cadence, so timing/aliasing are NOT the cause.
+  => a real failure of one of: (a) jumper open / not seated, (b) P8_15 not in
+  GPIO output mode, (c) P8_13 not in GPIO input mode, (d) a silent libgpiod
+  read error. The old binary could not tell which.
+- IMMEDIATELY AFTER, user ACCIDENTALLY PULLED THE JUMPER OUT OF THE HEADER
+  WHILE THE BOARD WAS STILL POWERED -> the board shut down and rebooted again.
+- HARD SAFETY RULE (added, absolute): **NEVER insert or remove any header wire
+  while the board is powered.** Plugging/unplugging a jumper on a live pin can
+  momentarily bridge it to an adjacent pin or ground, dumping current into the
+  PMIC and causing the brown-out reboot (this matches every reboot we've seen).
+  Before touching ANY wire on the P8/P9 header: power the board fully OFF
+  (remove barrel jack), or at minimum stop all firmware (`sudo ./load_pru.sh
+  stop` / unload), then make your wiring change with the board OFF, then
+  power back on.
+- FIX (commit below): rewrote loopback_self + loopback_probe to report the
+  FAIL reason explicitly -- "FAIL request OUTPUT/INPUT <pin> (muxed away?)"
+  if a GPIO request fails, plus a `reads/errors/range` line so an open wire
+  (range 0..0, 0 errors) is distinguishable from a mux/permission fault.
+- Status: RIG SELF-TEST still 0 transitions; cause not yet distinguished.
+  Re-run with the new binary to see WHY (FAIL line vs range 0..0).
+
+### ACTION for user (SAFE, and now diagnostic)
+1. Board OFF (remove barrel jack) OR ensure no firmware is driving pins.
+2. Re-make on board: `cd ~/eyespies/pru && make loopback_self loopback_probe`
+3. Power board ON. Jumper P8_15<->P8_13 (board can be on for this READ-ONLY
+   test because the tool sets the pins itself; but if you must change wiring,
+   do it with board OFF).
+4. `sudo ./loopback_self gpiochip1 15 gpiochip1 28 6`
+   - "FAIL request OUTPUT gpiochip1:15" => P8_15 not in GPIO mode (mux) -> fix mux.
+   - "FAIL request INPUT gpiochip1:28"  => P8_13 not in GPIO mode -> fix mux.
+   - reads=N errors=0 range=[0..0]      => open wire / bad seat -> swap wire.
+   - transitions>3 / RIG OK            => rig proven, proceed to P9_29 test.
+   NOTE: do NOT pull the wire while powered. Stop the test first, then change.
+
