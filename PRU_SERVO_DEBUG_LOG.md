@@ -654,3 +654,53 @@ servo still dead
 ### Status
 - Fix pushed (b4d24a5). Awaiting board test result for pru_const_high.pru0.out.
 
+---
+
+## 21. BOARD #30 — BUILD RESULT: real firmware compiles; helper had a typo
+
+### What happened on `git pull && make`
+- Pulled b4d24a5..f20753a cleanly (pru1_servo + pru_const_high + Makefile + log).
+- `pru1_servo.pru1.out` COMPILED WITH NO ERRORS (only the harmless
+  `volatile-register-var` warning). -> the shared-RAM address fix (0x00010000) is
+  syntactically and semantically fine; PRU sees valid local shared RAM now.
+- `pru_const_high.pru0.out` FAILED TO COMPILE:
+    pru_const_high.pru0.c:22: error: expected identifier or '(' before '=' token
+  ROOT CAUSE: in the resource_table decl, the variable NAME was missing:
+    } __attribute__((packed, section(".resource_table"), used)) = { ... }
+  must be
+    } __attribute__((packed)) resource_table = { ... }
+  (mirrors pru0_servo.pru0.c which compiled fine). Typo introduced on the Mac
+  where there is no pru-gcc, so it was never caught until the board build.
+- `make` stops at first error, so pru_const_high was NOT produced, but
+  pru1_servo.pru1.out WAS produced earlier in the recipe order.
+
+### uenvcmd state
+- User ran `sudo sed ... 0x47 -> 0x24` and `grep` showed `uenvcmd=mw.l 0x44E109BC 0x24`.
+- BUT the mux only applies at BOOT. No `sudo reboot` was done yet, so the pad is
+  STILL in GPIO mode 7 (0x47) until the next reboot. Must reboot before any PRU test.
+
+### ANSWERS to user's questions
+- "Why not working now?" -> Not a hardware/PRU problem. A syntax typo in MY helper
+  file blocked the build. The real servo firmware compiled successfully.
+- "Is the PRU sending signal to P9_29?" -> Still UNKNOWN; we have not observed the
+  pad yet. Blocked only by (a) the helper build error (now fixed) and (b) the
+  pending reboot to switch the pad to PRU mode 4.
+- "What is the blockage now?" -> (1) fixed: helper typo (commit after #30).
+  (2) still needed: one `sudo reboot` so uenvcmd 0x24 takes effect.
+
+### FIX + NEXT STEPS issued
+1. (done) pru_const_high.pru0.c: add variable name `resource_table` -> compiles.
+2. On board: `cd ~/eyespies/pru && git pull && make`  (full build, no errors)
+3. `sudo reboot`
+4. After reboot, isolation test:
+   `sudo ./load_pru.sh pru0 pru_const_high.pru0.out`
+   - EXPECT: servo SWINGS once per ~2 s (1 s HIGH / 1 s LOW).
+   - YES -> PRU GPO reaches P9_29 (standby/mux OK). Then load real fw:
+       `sudo ./arm_write_p929 1500`
+       `sudo ./load_pru.sh pru0 pru1_servo.pru1.out`
+     EXPECT: smooth sweep; vary 1000/2000 for end-stops.
+   - NO  -> r30 not reaching pad at all; report and stop.
+
+### Status
+- Helper typo fix pushed. Awaiting board: git pull && make (full) && reboot && test.
+
