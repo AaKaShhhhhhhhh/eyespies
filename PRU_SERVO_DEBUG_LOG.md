@@ -984,3 +984,24 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
   Stop inducing the fault; do not reconnect externally-powered servo to a pin.
 - Status: awaiting safe retest per above (servo fully unplugged).
 
+### dmesg captured AFTER placing jumper P9_29<->P8_13 (REASSURING)
+- User ran `sudo dmesg | tail -n 20` with the jumper in place.
+- FINDING: **completely clean, normal boot. NO PMIC / undervoltage / brownout /
+  regulator fault anywhere.** Board reached full userspace
+  (remoteproc1/2 "available" at ~45s). => board is alive and healthy; reboot was
+  self-protecting, NOT destructive.
+- `remoteproc1`/`remoteproc2` available BUT **no "Booting fw image
+  am335x-pru0-fw" line** => PRU firmware NOT loaded in this capture =>
+  jumper in place but PRU idle => this is the safe baseline (nothing driving P9_29).
+- Benign, unrelated noise (IGNORE):
+  - `pinctrl-single ... pin PIN0 already requested by 481d8000.mmc; cannot claim
+    for 48038000.mcasp` => onboard audio (mcasp) vs eMMC pin conflict; pre-existing
+    on every BBB, NOT our issue.
+  - `configfs-gadget.g_multi` MAC lines => USB Ethernet/RNDIS gadget, normal.
+  - `at24 ... supply vcc not found, using dummy regulator` => EEPROMs, normal.
+- CONCLUSION: board stable because PRU idle + (presumably) servo not driving pin.
+  Decisive test = load gpo_self_test + loopback_probe 6 WITH servo 100% unplugged.
+  Expect ~30 transitions if P9_29 pad is PRU-driven; reboot => bad jumper wire or
+  P9_29 pad fault.
+- Status: awaiting isolated retest (servo 100% detached).
+
