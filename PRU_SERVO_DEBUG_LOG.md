@@ -1290,3 +1290,35 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
      -> servo should sweep end-to-end.
 - Status: awaiting board re-run with forced rebuild (rm -f first). P9_16 chosen
   as the servo pin. P9_29 investigation shelved unless PRU specifically wanted.
+
+### BOARD #41: gpio_sweep BUILT + ran — says NONE => ASSISTANT had the WRONG line number
+- USER built gpio_sweep explicitly (`make gpio_sweep`) — it was never built before
+  (standalone target, not in `make` default `all`). So the earlier "sweep proved
+  the wiring" was an UNASSUMED claim: I had NEVER actually seen sweep output.
+- Ran `sudo ./gpio_sweep gpiochip1 28 4` and `... gpiochip1 15 4` -> BOTH said
+  "NONE. This pin is not connected through the jumper to any other GPIO1 line."
+- ROOT CAUSE (assistant error, not hardware): I told the user P8_13 = gpiochip1
+  line 28. That is WRONG. Correct BeagleBone mapping:
+    P8_13 = GPIO0_23 = gpiochip0 line 23
+    P8_15 = GPIO1_15 = gpiochip1 line 15   (this one was right)
+  The physical jumper is on P8_13<->P8_15 = gpiochip0:23 <-> gpiochip1:15.
+  But every test drove/read gpiochip1:28 (a different physical pin, NOT on the
+  jumper). Therefore sweep found NONE and loopback read 0 — the WIRE WAS FINE;
+  my line number was wrong the entire time. The "contradiction" I chased was a
+  fiction; I never had real sweep output.
+- FIX (no code change to tools yet, just correct args):
+  1. Let the board state the true mapping:
+       sudo cat /sys/kernel/debug/gpio 2>/dev/null | grep -iE 'p8_13|p8_15|p9_16'
+  2. Run the CORRECTED rig (P8_13 = gpiochip0:23):
+       make gpio_sweep
+       sudo ./gpio_sweep gpiochip0 23 4
+       sudo ./gpio_sweep gpiochip1 15 4
+       sudo ./loopback_self gpiochip1 15 gpiochip0 23 6
+     Expect: sweep now reports the partner AND loopback RIG OK.
+  3. If still NONE, paste the debugfs grep and use the REAL mapping it shows
+     (no more guessing from assistant memory).
+- Also fixed loopback_self.c:50 misleading-indentation warning (now
+  `if (ic != oc) { gpiod_chip_close(ic); } return 1;`).
+- LESSON: never trust "assumed proven" without pasted output. Sweep must be
+  run fresh and its output pasted before declaring wiring confirmed.
+- Status: awaiting corrected-args run (gpiochip0:23 <-> gpiochip1:15).

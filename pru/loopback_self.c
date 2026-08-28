@@ -47,7 +47,7 @@ int main(int argc, char **argv)
     struct gpiod_line *il = gpiod_chip_get_line(ic, iline);
     if (!il) { fprintf(stderr, "FAIL get input line %d\n", iline);
                gpiod_line_release(ol); gpiod_chip_close(oc);
-               if (ic != oc) gpiod_chip_close(ic); return 1; }
+               if (ic != oc) { gpiod_chip_close(ic); } return 1; }
     if (gpiod_line_request_input(il, "lb_rd") < 0) {
         fprintf(stderr, "FAIL request INPUT %s:%d (muxed/claimed?)\n", ichip, iline);
         gpiod_line_release(ol); gpiod_line_release(il);
