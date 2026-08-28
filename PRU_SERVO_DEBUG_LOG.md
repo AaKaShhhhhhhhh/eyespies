@@ -1322,3 +1322,40 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
 - LESSON: never trust "assumed proven" without pasted output. Sweep must be
   run fresh and its output pasted before declaring wiring confirmed.
 - Status: awaiting corrected-args run (gpiochip0:23 <-> gpiochip1:15).
+
+### BOARD #42: corrected-args run => P8 rig INCONCLUSIVE (pin claim), and that's FINE — we already have a proven servo pin
+- USER ran from 2ef6052:
+    git pull (a25df2d..2ef6052, got the loopback_self indent fix)
+    make gpio_sweep loopback_self
+    sudo ./gpio_sweep gpiochip0 23 4     -> FAIL request OUTPUT gpiochip0:23 (muxed away?)
+    sudo ./gpio_sweep gpiochip1 15 4     -> NONE (gpiochip1:15 not followed)
+    sudo ./loopback_self gpiochip1 15 gpiochip0 23 6  -> FAIL request INPUT gpiochip0:23 (muxed/claimed?)
+- INTERPRETATION (correction CONFIRMED, conclusion changed):
+  * The line-number fix from #41 was RIGHT: the kernel DID recognize
+    gpiochip0:23 as a real line (it produced a specific "request OUTPUT/INPUT
+    failed" error, not "no such line"). So P8_13 = GPIO0_23 = gpiochip0:23.
+  * BUT gpiochip0:23 cannot be opened as a free GPIO (muxed/claimed by the
+    device-tree / a driver). So BOTH sweep and loopback fail at open, not at
+    the wire. The jumper was never even exercised. This is NOT a wiring fault
+    and NOT a tool bug — it's a pin-availability issue in this image.
+  * gpiochip1:15 (P8_15) also shows NONE, consistent with it not being on the
+    jumper to gpiochip0:23 (the rig was half-dead, see #41).
+- CONCLUSION: the P8 control-rig is INCONCLUSIVE and not worth pursuing. We
+  do NOT need it. Its only purpose was to prove "userspace can drive a GPIO,"
+  and that is ALREADY proven by the user's own earlier result: toggling
+  gpiochip0 line 19 (P9_16) via `gpioset` MOVED THE SERVO. Direct ground truth
+  beats any loopback rig.
+- PIVOT FINAL: skip loopback entirely. Go straight to the servo on P9_16.
+
+### NEXT STEP (the real test — no jumper needed)
+- P9_16 = GPIO0_19 = gpiochip0 line 19. Already proven to move the servo by the
+  user's own gpioset test. servo_pwm_test.c drives exactly this pin with a 50Hz
+  PWM sweep. Build + run (SERVO WIRES ATTACHED per hard rule — power OFF while
+  plugging the 3 wires, then power ON):
+    cd ~/eyespies/pru
+    gcc -O2 -Wall -o servo_pwm_test servo_pwm_test.c -lgpiod
+    sudo ./servo_pwm_test
+  Expected: servo sweeps end-to-end and whirs over ~6s.
+  If silent/barely moves: wiring (orientation/ground/VCC) or weak 3.3V drive —
+  report and we'll check wiring + add a transistor level-shift.
+- Status: AWAITING servo_pwm_test run on P9_16 (servo attached).
