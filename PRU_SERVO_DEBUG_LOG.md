@@ -1150,3 +1150,42 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
     P8_14 = gpiochip1:14, to cross-check).
 - Status: WIRING FAULT CONFIRMED for the control rig. P9_29 verdict RE-OPENED
   (not proven dead). No board damage. See board #37.
+
+### BOARD STORAGE FAILURE (board #38) — filesystem went read-only / eMMC I/O error
+- User reports: mid-session, with NO command and NO reboot from them, the board
+  suddenly started printing and then EVERY command fails:
+    /usr/bin/clear: Input/output error
+    /usr/bin/sudo:  Input/output error
+    /usr/bin/ls:    Input/output error
+- Kernel warning seen just before:
+    [ 1586.722646] WARNING: CPU:0 PID:658 at drivers/net/phy/phy.c:1313
+                  _phy_state_machine+0xf3/0x1d4
+    [ 1586.731537] phy_check_link_status+0x1/0xb0: returned: -5
+  (this is the Ethernet PHY driver warning — cosmetic, NOT the root cause)
+- DECODE: `EIO` (Input/output error) on reading /usr/bin/* means the OS cannot
+  read those binaries off the eMMC => root filesystem is either forced
+  READ-ONLY (ext4 corruption) or the eMMC is returning I/O errors. This is a
+  STORAGE failure, NOT caused by the loopback GPIO test (that never wrote to
+  disk).
+- ROOT CAUSE (almost certainly): accumulated SUDDEN POWER LOSS. This session has
+  many abrupt cycles — PMIC brown-outs from live jumper changes, unplug/plug
+  power cycles, hot-plug reboots. Sudden power loss is the classic way to
+  corrupt ext4. The damage surfaced now as the kernel refusing reads.
+- CRITICAL: WORK NOT LOST.
+  * All firmware/Makefile/loopback tools/log are committed and PUSHED to
+    origin/main (HEAD bdf33ae). Reimage + git pull restores everything.
+  * Only board-specific state = /boot/firmware/uEnv.txt (one line:
+    uenvcmd=mw.l 0x44E109BC 0x24) — trivially recreated.
+  * .out/.bin binaries rebuild from repo.
+- SAFE RECOVERY (given to user):
+  1. Leave the dead terminal. Power board OFF (pull barrel jack). Unplug any
+     USB/serial that could back-feed 5V. Wait 15-20s.
+  2. Power ON. Watch serial from first line. Three outcomes:
+     (A) Normal login -> `mount | grep ' / '` and
+         `dmesg | grep -i -E 'mmc|ext4|error|readonly'` to check for ro/errors.
+     (B) Boot runs fsck / "recovering journal" -> let it finish.
+     (C) Hang at MMC errors / panic / no login -> eMMC likely failing -> reimage
+         from GitHub repo.
+  * Do NOT try to fsck from the dead shell (sudo/ls fail). Power cycle only.
+- Status: board filesystem failure, recovery pending power cycle + boot check.
+  User advised to NOT type commands into the dead shell.
