@@ -35,6 +35,14 @@
 #define GPIO_SETDATA    (GPIO0_BASE + 0x194u)   /* write 1 to set bit      */
 #define PIN_BIT         (1u << 19)              /* GPIO0_19 = P9_16        */
 
+/* PRU-ICSS CFG block (PRU0). SYSCFG offset 0x4. Bit 4 = STANDBY_INIT:
+ * 1 = OCP master port held in standby (cannot reach GPIO0 -> writes dropped).
+ * 0 = OCP master live (this is what lets the PRU write 0x44E07000).
+ * This is the bit the old firmware got wrong (it cleared bit 0, read-only
+ * IDLE_MODE, instead of bit 4). Must be cleared BEFORE any OCP write. */
+#define PRU0_CFG_SYSCFG 0x4A326004u
+#define CFG_STANDBY_INIT (1u << 4)
+
 #define PERIOD_US       20000u                   /* 20 ms frame @ 50 Hz    */
 
 /* Minimal remoteproc resource table (empty; loader requires it). */
@@ -54,6 +62,10 @@ static void delay_us(unsigned us) {
 }
 
 int main(void) {
+    /* CRITICAL: bring the PRU OCP master out of standby so writes to the
+     * GPIO0 registers actually leave the PRU and reach the peripheral. */
+    *(volatile uint32_t *)PRU0_CFG_SYSCFG &= ~CFG_STANDBY_INIT;
+
     /* Make sure P9_16 is an OUTPUT (bit 19 of GPIO_OE = 0). */
     *(volatile uint32_t *)GPIO_OE &= ~PIN_BIT;
 

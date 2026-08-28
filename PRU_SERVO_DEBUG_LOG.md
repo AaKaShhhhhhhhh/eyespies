@@ -1388,3 +1388,22 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
      Expect: servo sweeps end-to-end (PRU is now the source of PWM).
   6. If silent: report dmesg tail; we'll check OE/SET and the OCP master.
 - Status: AWAITING board build + load of pru_servo.out on P9_16.
+
+### BOARD #44: pru_servo.out loaded on PRU0 (4a334000) but servo did NOT move
+- Outcome: dmesg shows "remote processor 4a334000.pru is now up" (PRU0, NOT
+  PRU1 — 4a334000 is the PRU0 core address; PRU1 = 4a338000). So load was
+  correct. But servo silent at P9_16.
+- ROOT CAUSE: pru_servo.c never brought the PRU **OCP master port** out of
+  standby. The CFG SYSCFG register (0x4A326004) bit 4 = STANDBY_INIT defaults
+  to 1 at reset, holding the OCP port in standby so any write the PRU makes to
+  GPIO0 (0x44E07000) is silently dropped. The firmware "ran" (dmesg up) but
+  never actually toggled the pad. This is exactly the bit the old pru1_servo
+  got WRONG (it cleared bit 0, read-only IDLE_MODE status, instead of bit 4).
+- FIX: clear SYSCFG bit 4 (STANDBY_INIT) as the very first action in main(),
+  before touching GPIO_OE/SET/CLEAR. Patched pru_servo.c; committed as the
+  next revision after b04ee9f.
+- REBUILD + RELOAD:
+  cd ~/eyespies/pru && git pull && make pru_servo.out && \
+  sudo ./load_pru.sh pru0 pru_servo.out
+  Expect: servo now SWEEPS (PRU OCP live -> it drives GPIO0_19 PWM).
+- Status: AWAITING rebuild with STANDBY_INIT fix; expect movement.
