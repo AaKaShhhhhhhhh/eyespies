@@ -36,7 +36,7 @@ all: pru0_servo.out servo_steady.out hold_high.out blink.out \
      gpo_self_test.pru0.out \
      gpio_hold gpio_read servo_pwm_test arm_write_p929 pru1_servo.pru1.out \
      pru_const_high.pru0.out \
-     p929_gpio_test syscfg_probe loopback_probe
+     p929_gpio_test syscfg_probe loopback_probe gpio_toggle
 
 # Real servo firmware -- PRU0 drives P9_29 via r30.1. The pad is muxed to
 # PRU mode 4 by the device-tree overlay pru_p9_29.dts (load it FIRST; see the
@@ -124,6 +124,12 @@ gpo_self_test.pru0.out: gpo_self_test.pru0.c resource_table_empty.h
 # Used as the read side of the loopback test. Run AFTER jumpering P9_29->P8_13.
 #   gcc -O2 -o loopback_probe loopback_probe.c -lgpiod ; sudo ./loopback_probe 6
 loopback_probe: loopback_probe.c
+	gcc -O2 -Wall -o $@ $< -lgpiod
+
+# Linux helper: drive a known-good GPIO (e.g. P8_15) to self-test the
+# P9_29->P8_13 loopback rig. If loopback_probe sees transitions when this
+# drives a jumpered pin, the rig (wire + P8_13 input + tool) is proven good.
+gpio_toggle: gpio_toggle.c
 	gcc -O2 -Wall -o $@ $< -lgpiod
 
 # Device-tree overlay: mux P9_29 -> PRU0 (mode 4). Build with dtc, then load
