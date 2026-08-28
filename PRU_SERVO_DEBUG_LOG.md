@@ -1444,3 +1444,30 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
   sudo devmem2 0x4A326004   # bit 4 (STANDBY_INIT) should now read 0
   (global CFG mirror = 0x4A326000 + 0x4). If still 1, STANDBY path differs.
 - Status: AWAITING rebuild with AUTHORITATIVE LOCAL CFG address; high conf.
+
+### BOARD #47: real readback 0x3A -> STANDBY_INIT still 1 -> lone 0 write ignored
+- USER loaded 614d2af (size 3028, state running) and ran `devmem2 0x4A326004`
+  -> **0x3A = 0b0011_1010**. Bit 4 (0x10) = 1 -> STANDBY_INIT STILL SET.
+- This is a POSITIVE result: it proves the SYSCFG address 0x00026004 (global
+  mirror 0x4A326004) the firmware wrote IS the real register — the write
+  landed (global mirror reflects PRU writes), but a lone `&= ~bit4` (write 0)
+  is HARDWARE-IGNORED.
+- ROOT CAUSE OF SILENCE (definitive): AM335x TRM PRU-ICSS SYSCFG behaviour —
+  STANDBY_INIT must be WRITTEN 1 THEN 0 to de-assert. A single 0 write from 1
+  state is a no-op. Our firmware did only the 0 write -> bit stays 1 -> OCP
+  master gated -> all GPIO0 writes dropped -> servo silent. This is the
+  correct explanation for #44..#47 (address was also wrong earlier; now fixed,
+  but the 1->0 sequence was the missing piece).
+- FIX: do the documented sequence in firmware BEFORE any GPIO write:
+      syscfg |=  CFG_STANDBY_INIT;   /* bit4 = 1 */
+      syscfg &= ~CFG_STANDBY_INIT;   /* bit4 = 0 -> OCP live */
+- REBUILD + RELOAD (same as before):
+  cd ~/eyespies/pru && git pull && make pru_servo.out && \
+  sudo ./load_pru.sh pru0 pru_servo.out
+  then: sudo devmem2 0x4A326004 -> bit4 should now read 0 (value 0x2A).
+- CONFIDENCE: high. This matches the exact TRM de-assert sequence and the
+  empirical 0x3A readback. If STILL 1 after this, the only remaining theory
+  is an external force holding standby (unlikely) -> then pivot to driving
+  P9_16 via PRU __R30 direct-output instead of GPIO OCP (needs pinmux to PRU
+  mode, a separate path we avoided).
+- Status: AWAITING rebuild with 1->0 STANDBY sequence; high conf.

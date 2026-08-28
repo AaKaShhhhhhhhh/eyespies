@@ -68,9 +68,16 @@ static void delay_us(unsigned us) {
 }
 
 int main(void) {
-    /* CRITICAL: bring the PRU OCP master out of standby so writes to the
-     * GPIO0 registers actually leave the PRU and reach the peripheral. */
-    *(volatile uint32_t *)PRU0_CFG_SYSCFG &= ~(CFG_STANDBY_INIT | (1u << 0));
+    /* Bring the PRU OCP master out of standby so writes to GPIO0 reach the
+     * pin. SYSCFG lives in the PRU-ICSS CFG block (local 0x00026004).
+     * AM335x TRM: STANDBY_INIT must be written 1 THEN 0 to de-assert standby.
+     * A lone 0 write (as tried before) is ignored — confirmed by devmem2
+     * readback 0x3A (bit4=1) after load. So do the 1->0 sequence. */
+    {
+        volatile uint32_t *syscfg = (volatile uint32_t *)PRU0_CFG_SYSCFG;
+        *syscfg |=  CFG_STANDBY_INIT;   /* bit4 = 1 */
+        *syscfg &= ~CFG_STANDBY_INIT;   /* bit4 = 0 -> OCP master live */
+    }
 
     /* Make sure P9_16 is an OUTPUT (bit 19 of GPIO_OE = 0). */
     *(volatile uint32_t *)GPIO_OE &= ~PIN_BIT;
