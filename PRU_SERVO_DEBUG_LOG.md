@@ -1421,10 +1421,26 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
   So my clear wrote to the wrong register; STANDBY_INIT on the REAL CFG
   never cleared -> OCP master stayed gated -> GPIO writes dropped -> silent.
   This is the actual reason for #44 AND #45.
-- FIX: PRU0_CFG_SYSCFG = 0x4A322004 (also clear bit0 for good measure).
-  Committed as the next revision after bcc1b85.
+- FIX ATTEMPT: changed to 0x4A322004 (commit 1cee084). **WRONG** — this was
+  a misread; 0x4A322000 is NOT a real ICSS register. See #46 for the REAL fix.
+- Status: superseded by BOARD #46.
+
+### BOARD #46: AUTHORITATIVE fix — CFG at PRU-LOCAL 0x00026004 (from TI pru_cfg.h)
+- DEFINITIVE SOURCE: TI's own `am335x/pru_cfg.h` ships:
+      static volatile pruCfg *__CT_CFG = (void *)0x00026000;
+  SYSCFG = CFG offset 0x4  =>  PRU-LOCAL address **0x00026004**.
+  (NOT a global 0x4A326xxx. The CFG block is *internal* to the PRU-ICSS and
+   is reached via the PRU's LOCAL data bus at 0x00026000, not via the OCP
+   master — writing 0x4A326004/0x4A322004 from the PRU's OCP port never
+   reliably reached the gate controller, so STANDBY_INIT never cleared.)
+- CORRECTED: `PRU0_CFG_SYSCFG = 0x00026004u` (local view). This is THE way
+  every TI PRU example clears STANDBY_INIT (`CT_CFG.SYSCFG_bit.STANDBY_INIT=0`).
+- ALSO RETRACTED the bogus 0x4A322004 theory from #45 (it was a misread of the
+  PRU_GUIDE line; 0x4A322000 is not a real ICSS base).
 - REBUILD + RELOAD:
   cd ~/eyespies/pru && git pull && make pru_servo.out && \
   sudo ./load_pru.sh pru0 pru_servo.out
-  Expect: servo SWEEPS now (OCP master truly live -> drives GPIO0_19 PWM).
-- Status: AWAITING rebuild with CORRECT CFG address; high confidence.
+- OPTIONAL VERIFY (ARM side, needs devmem2): after load,
+  sudo devmem2 0x4A326004   # bit 4 (STANDBY_INIT) should now read 0
+  (global CFG mirror = 0x4A326000 + 0x4). If still 1, STANDBY path differs.
+- Status: AWAITING rebuild with AUTHORITATIVE LOCAL CFG address; high conf.

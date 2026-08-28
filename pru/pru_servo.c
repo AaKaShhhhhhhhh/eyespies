@@ -35,17 +35,18 @@
 #define GPIO_SETDATA    (GPIO0_BASE + 0x194u)   /* write 1 to set bit      */
 #define PIN_BIT         (1u << 19)              /* GPIO0_19 = P9_16        */
 
-/* PRU0 CFG block (SYSCFG register) — global L3 address 0x4A322004.
- * (Local PRU-view equivalent is 0x00022004; the earlier 0x4A326004 was a
- *  DIFFERENT ICSS sub-block and did NOT clear our STANDBY_INIT — that was
- *  the bug behind board #44/#45 "running but silent".)
- * SYSCFG bit 4 = STANDBY_INIT: when 1 the PRU OCP master port is held in
- *   standby so writes to 0x44E07000 (GPIO0) are silently dropped -> servo
- *   never moves. Clear to 0 to bring the OCP master live. We also clear bit 0
- *   (the repo's earlier r30-era "fix") although it is a read-only IDLE_MODE
- *   status bit; the write is ignored but removes any doubt. MUST be cleared
- *   BEFORE any GPIO write. */
-#define PRU0_CFG_SYSCFG 0x4A322004u
+/* PRU CFG block — AUTHORITATIVE address from TI's own pru_cfg.h:
+ *     static volatile pruCfg *__CT_CFG = (void *)0x00026000;
+ * SYSCFG is at CFG offset 0x4, so the PRU-LOCAL address is 0x00026004.
+ * (We use the LOCAL view, NOT a global 0x4A326xxx address — the CFG block is
+ *  internal to the PRU-ICSS and is accessed via the PRU's local bus window.
+ *  Writing a global address from the PRU's OCP master does NOT reliably
+ *  reach it; that's why 0x4A326004 and the bogus 0x4A322004 never worked.)
+ * SYSCFG bit 4 = STANDBY_INIT: when 1 the PRU OCP master is held in standby
+ *   so writes to 0x44E07000 (GPIO0) are silently dropped -> servo never
+ *   moves even though the firmware "runs". Clear to 0 to bring OCP live.
+ * MUST be cleared BEFORE any GPIO write. */
+#define PRU0_CFG_SYSCFG 0x00026004u
 #define CFG_STANDBY_INIT (1u << 4)
 
 #define PERIOD_US       20000u                   /* 20 ms frame @ 50 Hz    */
