@@ -1,44 +1,34 @@
 #include <stdint.h>
+#include "resource_table_empty.h"
 
-/* Minimal, fault-PROOF PRU0 firmware: drives P9_29 (r30.1) as a slow 0.5 Hz
+/* Minimal, fault-PROOF PRU0 firmware: drives P9_29 (r30.1) as a slow ~0.5 Hz
    square wave (1 s HIGH / 1 s LOW) forever. It does NOT read any memory
-   (no shared RAM, no OCP), so there is zero chance of a bus fault halting
-   the core. Purpose: isolate whether the PRU's r30.1 actually reaches the
-   P9_29 pad when muxed to PRU mode 4.
-     - If the servo SWINGS to extremes once per second -> GPO reaches the pad
-       (standby/mux are fine); the real bug was elsewhere (e.g. the shared-RAM
-       address fault in pru1_servo).
-     - If the servo stays dead -> the PRU output is not reaching the pad at all
-       (standby/tri-state or mux), independent of firmware logic. */
+   (no shared RAM, no OCP), so a bus fault cannot halt it. Isolation test:
+   if the servo swings once per ~2 s, the PRU GPO reaches P9_29 (standby/mux
+   are fine) and the only prior bug was firmware logic (bad shared-RAM adddress);
+   if it stays dead, r30 is not reaching the pad at all. */
 
-register uint32_t __R30 __asm__("r30");
-#define SERVO_BIT (1u << 1)   /* r30.1 -> P9_29 on PRU0 (mux mode 4) */
+volatile register uint32_t __R30 __asm__("r30");
 
-/* Minimal remoteproc resource table (num=0 -> no carveouts needed). */
-struct resource_table { uint32_t ver; uint32_t num; uint32_t reserved[2]; };
-struct my_resource_table {
-    struct resource_table base;
-    uint32_t offset[1];
-} __attribute__((packed, section(".resource_table"), used)) =
-    { .base = { 1, 0, {0, 0} }, .offset = { 0 } };
+#define ONE_SEC_CYCLES  40000000u   /* PRU = 200 MHz -> 5 ns/cycle */
 
-/* PRU runs at 200 MHz -> 200 cycles = 1 us. pru-gcc wants a compile-time
-   constant for __delay_cycles, so loop fixed 10 us chunks. */
-#define CHUNK_CYCLES 2000u   /* 2000 cycles = 10 us @ 200 MHz */
-static void delay_us(unsigned us) {
-    unsigned chunks = (us * 200u) / CHUNK_CYCLES;   /* us / 10 */
-    unsigned i;
-    for (i = 0; i < chunks; i++) __delay_cycles(CHUNK_CYCLES);
-}
+struct resource_table {
+    uint32_t reserved[2];
+    uint8_t  num;
+    uint8_t  type;
+    uint16_t resv;
+    uint32_t offset;
+} __attribute__((packed)) resource_table = {
+    {0, 0},
+    0, 0, 0, 0
+};
 
-int main(void)
-{
-    __R30 &= ~SERVO_BIT;          /* start LOW */
-    while (1) {
-        __R30 |=  SERVO_BIT;      /* P9_29 HIGH for 1 s */
-        delay_us(1000000u);
-        __R30 &= ~SERVO_BIT;      /* P9_29 LOW for 1 s */
-        delay_us(1000000u);
+void main(void) {
+    /* STANDBY_INIT already cleared by remoteproc; do NOT touch SYSCFG. */
+    for (;;) {
+        __R30 |=  (1u << 1);            /* r30.1 = 1 -> P9_29 HIGH ~1 s */
+        __delay_cycles(ONE_SEC_CYCLES);
+        __R30 &= ~(1u << 1);            /* r30.1 = 0 -> P9_29 LOW  ~1 s */
+        __delay_cycles(ONE_SEC_CYCLES);
     }
-    return 0;
 }
