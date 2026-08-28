@@ -910,11 +910,22 @@ sudo ./loopback_probe 6
   -> then the earlier P9_29 `total transitions: 0` is a REAL result, and we
      pivot to "P9_29 pad not driven" (ball/hardware fault -> move to P8_46).
 - If `total transitions: 0` even here -> the rig itself is broken (bad wire,
-  wrong mapping P8_13=gpiochip1 line14, or P8_13 not in GPIO mode). FIX THE RIG
+  wrong mapping P8_13=gpiochip1 line 28 [the code uses GPIO1_28, NOT line 14],
+  or P8_13 not in GPIO mode). FIX THE RIG
   (e.g. confirm P8_13 mux 0x44E10834=0x27, try a different input pin) before
   any further loopback conclusion.
 
 ### Status
 - `gpio_toggle.c` + Makefile target pushed (4cb42d4). Awaiting board rig self-test.
 - Only after a GREEN rig self-test does P9_29=0 become a decisive hardware finding.
+
+### CORRECTION (doc only, code is right)
+Earlier chat text said "P8_13 = gpiochip1 line 14". That was WRONG in the
+prose: the actual `loopback_probe.c` correctly targets P8_13 = GPIO1_28 =
+**gpiochip1 line 28** (confirmed by reading the source). So the board's
+`total transitions: 0` result DID read the correct pin, and it opened the
+input without error (so P8_13 was in GPIO mode and the read path works).
+The "line 14" number in chat is a documentation slip, not a code bug. The
+rig self-test command above uses P8_15 (gpiochip1 line 15) which is the
+sibling pin on the same bank as P8_13 (line 28) — also correct.
 
