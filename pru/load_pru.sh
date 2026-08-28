@@ -30,31 +30,17 @@ else
     [ -f "$FW"  ] || { echo "error: $FW not found"; exit 1; }
 fi
 
-# Stop mode: just halt the PRU and exit.
-if [ "$1" = "stop" ]; then
-    if [ "$(cat "$RPROC/state" 2>/dev/null)" = "running" ]; then
-        echo "stop  -> $RPROC/state"
-        echo stop | sudo tee "$RPROC/state" >/dev/null
-        for i in $(seq 1 20); do
-            [ "$(cat "$RPROC/state" 2>/dev/null)" = "offline" ] && break
-            sleep 0.1
-        done
-    else
-        echo "already stopped (state: $(cat "$RPROC/state" 2>/dev/null))"
-    fi
-    echo "----------------------------------------"
-    echo "state : $(cat "$RPROC/state")"
-    exit 0
-fi
-
-# On 6.x the remoteproc node /name is the DT address, not "pruN":
-#   pru0 -> 4a334000.pru   pru1 -> 4a338000.pru   (so match by address)
+# Map PRU core -> firmware name + DT-address pattern, then discover the
+# remoteproc sysfs node. This MUST run before any block that touches $RPROC
+# (including the 'stop' action below).
 case "$PRU" in
     pru0) FWNAME=am335x-pru0-fw; PAT="4a334000" ;;
     pru1) FWNAME=am335x-pru1-fw; PAT="4a338000" ;;
     *)    echo "error: PRU must be pru0 or pru1"; exit 1 ;;
 esac
 
+# On 6.x the remoteproc node /name is the DT address, not "pruN":
+#   pru0 -> 4a334000.pru   pru1 -> 4a338000.pru   (so match by address)
 # Auto-discover the remoteproc node by reading its /name (remoteproc0 is
 # usually wkup_m3, NOT a PRU, on this kernel — never hardcode the number).
 RPROC=""
@@ -71,6 +57,23 @@ if [ -z "$RPROC" ]; then
     exit 1
 fi
 echo "Using $RPROC (name: $(cat "$RPROC/name"))"
+
+# Stop mode: just halt the PRU and exit.
+if [ "$1" = "stop" ]; then
+    if [ "$(cat "$RPROC/state" 2>/dev/null)" = "running" ]; then
+        echo "stop  -> $RPROC/state"
+        echo stop | sudo tee "$RPROC/state" >/dev/null
+        for i in $(seq 1 20); do
+            [ "$(cat "$RPROC/state" 2>/dev/null)" = "offline" ] && break
+            sleep 0.1
+        done
+    else
+        echo "already stopped (state: $(cat "$RPROC/state" 2>/dev/null))"
+    fi
+    echo "----------------------------------------"
+    echo "state : $(cat "$RPROC/state")"
+    exit 0
+fi
 
 # 1) If already running, stop it FIRST (so the firmware node isn't busy).
 if [ "$(cat "$RPROC/state" 2>/dev/null)" = "running" ]; then
