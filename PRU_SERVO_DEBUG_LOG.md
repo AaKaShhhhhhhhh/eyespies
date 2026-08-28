@@ -876,4 +876,45 @@ the cross-chip P8_13 jumper is cleanest because P9_29 stays in PRU mode 4.
 - Loopback test files pushed (gpo_self_test.pru0.c, loopback_probe.c, Makefile).
 - Awaiting board: git pull && make && loopback run. This settles r30 pad reach.
 
+---
+
+## 24. BOARD #33 — LOOPBACK READ ALL ZEROS; RIG SELF-TEST REQUIRED FIRST
+
+### Board result (2026-08-28, after git pull / make)
+- `gpo_self_test.pru0.out` loaded on PRU0, state running (size 2900, header-less
+  resource table warnings only — harmless).
+- `sudo ./loopback_probe 6` over P9_29 -> P8_13 jumper: **`total transitions: 0`**,
+  every sample `value=0`. Tool printed `LOOPBACK DEAD`.
+
+### INTERPRETATION — NOT YET CONCLUSIVE
+An all-zeros read is ambiguous. It is produced by EITHER:
+  (a) P9_29 r30.1 genuinely not driving the pad, OR
+  (b) the jumper between P9_29 and P8_13 was NOT connected (P8_13 then floats
+      low or is pulled low). The paste does not confirm the wire was in place.
+
+So before concluding "P9_29 ball is dead," we must PROVE the rig works using a
+pin Linux can definitely toggle. Added `gpio_toggle.c` for exactly this.
+
+### RIG SELF-TEST (run on board BEFORE trusting the P9_29=0 result)
+```bash
+cd ~/eyespies/pru && git pull && make clean && make
+# 1) In shell A: drive a KNOWN-GOOD GPIO at 5 Hz (P8_15 = gpiochip1 line 15,
+#    default GPIO mode 7, no mux needed):
+sudo ./gpio_toggle gpiochip1 15 6
+# 2) Jumper P8_15 -> P8_13 (same input pin loopback_probe reads).
+# 3) In shell B (same time window):
+sudo ./loopback_probe 6
+```
+- EXPECT: `value=1`/`value=0` alternating, `total transitions: ~30` ->
+  RIG PROVEN GOOD (jumper + P8_13 input + libgpiod + tool all correct).
+  -> then the earlier P9_29 `total transitions: 0` is a REAL result, and we
+     pivot to "P9_29 pad not driven" (ball/hardware fault -> move to P8_46).
+- If `total transitions: 0` even here -> the rig itself is broken (bad wire,
+  wrong mapping P8_13=gpiochip1 line14, or P8_13 not in GPIO mode). FIX THE RIG
+  (e.g. confirm P8_13 mux 0x44E10834=0x27, try a different input pin) before
+  any further loopback conclusion.
+
+### Status
+- `gpio_toggle.c` + Makefile target pushed (4cb42d4). Awaiting board rig self-test.
+- Only after a GREEN rig self-test does P9_29=0 become a decisive hardware finding.
 
