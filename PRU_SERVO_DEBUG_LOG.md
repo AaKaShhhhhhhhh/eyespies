@@ -739,8 +739,9 @@ Added to the top of `main()` in ALL THREE firmwares:
 ### Files changed (pushed after #31)
 - pru1_servo.pru1.c: clear STANDBY_INIT before the PWM loop.
 - pru0_servo.pru0.c: clear STANDBY_INIT before the sweep loop.
-- pru_const_high.pru0.c: clear STANDBY_INIT before the 0.5 Hz square wave.
-- (arm_write_p929.c SYSCFG comment corrected; the clear must come from the PRU.)
+- pru_const_high.pru0.c: self-contained resource table (does NOT include
+  resource_table_empty.h, which already defines struct resource_table -> would
+  clash). Mirrors pru1_servo.pru1.c exactly so pru-gcc builds it cleanly.
 
 ### FORWARD PLAN — all possibilities, ending in the fix that should 100% work
 Ordered so each step either confirms the fix or reveals the true remaining fault.
