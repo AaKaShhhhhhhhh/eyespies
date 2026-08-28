@@ -1005,3 +1005,26 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
   P9_29 pad fault.
 - Status: awaiting isolated retest (servo 100% detached).
 
+### VALID loopback #1 (servo 100% OFF, correct single jumper) -> 0 transitions
+- Setup: servo fully disconnected from board. ONE jumper P9_29<->P8_13.
+  PRU loaded gpo_self_test.pru0.out (remoteproc1 "now up", size 2900).
+  Ran `sudo ./loopback_probe 6`.
+- RESULT: t=0.0..5.9s all value=0, **total transitions: 0**
+  -> "LOOPBACK DEAD: P9_29 pad never toggled".
+- CRITICAL: board did NOT reboot this time (servo absent). This CONFIRMS the
+  earlier reboots were caused by the servo wires, NOT the loopback test. Safe.
+- This is the first CLEAN/VALID loopback (prior run #154 was invalid: jumper
+  was placed on each pin separately, not bridging).
+- BUT 0 transitions is NOT yet proof the P9_29 pad is dead. Must rule out:
+  (a) jumper wire doesn't conduct / not seated in P9_29 hole,
+  (b) P8_13 input side not reading,
+  (c) PRU output genuinely not reaching pad.
+- NEXT (control / rig self-test, NO reboot needed):
+  move the SAME wire's P9_29 end to P8_15 => P8_15<->P8_13.
+    shell A: sudo ./gpio_toggle gpiochip1 15 6
+    shell B: sudo ./loopback_probe 6
+  Expect ~30 transitions. That proves wire + P8_13 input path are good,
+  isolating the fault to the P9_29/PRU side. If 0 -> wire bad or P8_13 input
+  broken (swap wire / inspect).
+- Status: CONTROL TEST PENDING (rig self-test P8_15<->P8_13).
+
