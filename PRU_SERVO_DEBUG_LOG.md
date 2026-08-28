@@ -14,12 +14,46 @@
 | **TARGET PIN** | **P9_31** (`mcasp0_aclkx`, pad `0x44E10990`) = PRU0 **R30_0**, muxed mode 5 by U-Boot. |
 | **Why P9_29/P9_16 failed** | See §PIVOT. P9_29 was muxed **mode 4 on the WRONG pad** (`0x44E109BC` ≠ mcasp0_fsx). P9_16 has **no PRU mode** per the official PRU cape DTS. |
 | **Pin mux** | ✅ **SOLVED (permanent).** P9_31 = `mode 5` (`0x05`), set every boot by U-Boot `uenvcmd`: `mw.l 0x44E10990 0x05`. |
-| **Servo motion** | ⏳ **PENDING** — firmware `pru_servo.out` (commit a7aceb1) rebuilt for P9_31/R30_0; awaiting board load + observe. |
+| **Servo motion** | ✅ **SOLVED (verified on board, 2026-08-28).** PRU0 direct GPO (`__R30` bit 0) on P9_31 sweeps the MG90S continuously. `devmem2 0x44E10990 → 0x5` after load confirms mux held. |
 | **Board** | BeagleBone Black, eMMC boot, kernel `6.12.28-bone25`, U-Boot `2022.04-gc6f4cf7d`, PRU0 = `remoteproc1` = `4a334000.pru`. |
 
 ---
 
-## §PIVOT — Why P9_29 never worked, and why P9_31 will
+## §WIN — PRU servo confirmed moving on P9_31 (2026-08-28)
+
+**Outcome: WORKS — verified by user on the board.**
+
+Board evidence (exact):
+```
+$ sudo bash load_pru.sh pru0 pru_servo.out
+Using /sys/class/remoteproc/remoteproc1 (name: 4a334000.pru)
+mux   -> P9_31 (0x44E10990) = mode 5 (PRU0 R30_0)  [best-effort; U-Boot mux is authoritative]
+start -> /sys/class/remoteproc/remoteproc1/state
+[ 1086.772901] remoteproc remoteproc1: Booting fw image am335x-pru0-fw, size 3144
+[ 1086.780377] remoteproc remoteproc1: remote processor 4a334000.pru is now up
+state : running
+
+$ sudo devmem2 0x44E10990
+Value at address 0x44E10990 (0xb6f6b990): 0x5      <-- U-Boot mux held (mode 5)
+```
+Servo observed **moving** (continuous sweep). This is the first PRU-driven motion after ~290 turns across P9_16 and P9_29.
+
+**Final working configuration (the recipe to reproduce):**
+1. `uEnv.txt`: `uenvcmd=mw.l 0x44E10990 0x05` (U-Boot muxes P9_31 to PRU0 R30_0 every boot). One reboot required.
+2. `pru_servo.c`: PRU0 direct GPO — `volatile register uint32_t __R30 asm("r30");`, pulses `P9_31_R30_BIT = (1u << 0)`. No OCP / SYSCFG / STANDBY needed.
+3. Load: `git pull && cd pru && make pru_servo.out && sudo bash load_pru.sh pru0 pru_servo.out`.
+4. Wires: servo signal (yellow) → P9_31; 5V/VCC + GND on a 5V/GND pair (P9_5/P9_6 + P9_1/P9_2 etc.).
+
+**Why it failed before (definitive):**
+- P9_16 (`gpmc_be1n`, `0x44E10984`): mode 5 held, but **no PRU R30 route** (absent from the official PRU CAPE DTS) → `__R30` silent.
+- P9_29: old `uenvcmd` used `mw.l 0x44E109BC 0x24` — **wrong pad** (real P9_29 pad is `0x44E10994`) **and wrong mode** (should be `0x05`, not `0x24`). So R30 never reached the ball.
+
+**Lessons (so we never repeat this):**
+- On kernel 6.x, **ARM `devmem2` writes to the padconf are dropped** — only **U-Boot `mw.l`** in `uenvcmd` reliably muxes pins. Runtime `devmem2` mux is best-effort only.
+- Always cross-check the target ball against the **official PRU CAPE DTS** (`AM335X-PRU-RPROC-4-19-TI-PRUCAPE-00A0.dts`), not guesswork. The cape's `mcasp0_aclkx`/`P9_31` = PRU Blue LED = R30_0 is the validated route.
+- Mac cannot compile `pru-gcc`; the **BeagleBone is the authoritative build host**.
+
+---
 
 Definitive evidence from `sudo cat /sys/kernel/debug/pinctrl/44e10800.pinmux-pinctrl-single/pins` on the board:
 
