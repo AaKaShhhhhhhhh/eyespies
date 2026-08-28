@@ -10,10 +10,12 @@
 # Why a script (not pasted commands): pasting the cp/tee/echo steps in one
 # block loses newlines and concatenates commands (that broke your first load).
 #
-# The firmware drives P9_16 via the PRU's DIRECT GPO (__R30), which needs no
-# OCP / no SYSCFG / no STANDBY. The only pin setup required is muxing P9_16 to
-# PRU mode (mode 5 = pr1_pru0_pru_r30_5) - done at RUNTIME below via devmem2
-# (no reboot, no DT overlay). See pru_servo.c header for the rationale.
+# The firmware drives P9_31 via the PRU's DIRECT GPO (__R30 bit 0), which needs
+# no OCP / no SYSCFG / no STANDBY. P9_31 = mcasp0_aclkx = pad 0x44E10990, muxed
+# to mode 5 (PRU0 R30_0) by U-Boot at boot (see /boot/firmware/uEnv.txt
+# "mw.l 0x44E10990 0x05"). On kernel 6.x an ARM devmem2 write to the padconf is
+# dropped, so the runtime mux below is a best-effort no-op - the U-Boot mux is
+# what actually sticks. See pru_servo.c header for the rationale.
 set -e
 
 PRU="$1"
@@ -57,15 +59,16 @@ if [ "$(cat "$RPROC/state" 2>/dev/null)" = "running" ]; then
     done
 fi
 
-# 1b) Mux P9_16 to PRU0 R30 mode (runtime, no reboot).
-#     P9_16 = conf_gpmc_be1n = pad 0x44E10984. Mode 5 -> pr1_pru0_pru_r30_5.
-#     (The PRU's OCP master cannot reach GPIO0 on this image, so __R30 is used.)
+# 1b) Mux P9_31 to PRU0 R30 mode (runtime best-effort; real mux is U-Boot).
+#     P9_31 = mcasp0_aclkx = pad 0x44E10990. Mode 5 -> PRU0 R30_0.
+#     NOTE: on kernel 6.x ARM devmem2 writes to the padconf are dropped, so this
+#     only helps if the U-Boot mux in /boot/firmware/uEnv.txt is already set.
 if [ "$PRU" = "pru0" ]; then
     if command -v devmem2 >/dev/null 2>&1; then
-        echo "mux   -> P9_16 (0x44E10984) = mode 5 (PRU0 R30_5)"
-        sudo devmem2 0x44E10984 w 0x05 >/dev/null
+        echo "mux   -> P9_31 (0x44E10990) = mode 5 (PRU0 R30_0)  [best-effort; U-Boot mux is authoritative]"
+        sudo devmem2 0x44E10990 w 0x05 >/dev/null
     else
-        echo "WARN  : devmem2 not found - P9_16 must already be muxed to mode 5."
+        echo "WARN  : devmem2 not found - P9_31 must already be muxed to mode 5 via U-Boot."
     fi
 fi
 
