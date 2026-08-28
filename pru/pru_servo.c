@@ -20,20 +20,33 @@
  * SERVO TIMING (PRU0 core = 200 MHz, __delay_cycles(1) = 1 cycle):
  *   50 Hz period = 20 ms = 4,000,000 cycles.
  *   Pulse width 1.0 ms .. 2.0 ms = 200,000 .. 400,000 cycles (sweep).
+ *
+ * NOTE: __delay_cycles() only accepts a COMPILE-TIME constant, so we wrap it
+ * in a runtime helper that counts fixed 1000-cycle blocks (loop overhead is
+ * ~0.5%, fine for a demo sweep).
  */
 
 #include <stdint.h>
 #include "resource_table_empty.h"
 
 /* __R30 is the PRU direct GPO register (magic name, understood by pru-gcc). */
-volatile register uint32_t __R30;
+volatile register uint32_t __R30 asm("r30");
 
 #define P9_16_R30_BIT  (1u << 5)   /* P9_16 -> PRU0 R30_5 */
 
 #define PERIOD_CYCLES  4000000u    /* 20 ms @ 200 MHz = 50 Hz */
 #define PULSE_MIN      200000u     /* 1.0 ms */
 #define PULSE_MAX      400000u     /* 2.0 ms */
-#define PULSE_STEP      (20000u)   /* 10 positions across the sweep */
+#define PULSE_STEP     20000u      /* 10 positions across the sweep */
+#define DELAY_UNIT     1000u       /* __delay_cycles() needs a constant; count blocks */
+
+/* Runtime delay: total cycles = units * DELAY_UNIT (+ tiny loop overhead). */
+static inline void delay_cycles(uint32_t cycles)
+{
+    uint32_t units = cycles / DELAY_UNIT;
+    while (units--)
+        __delay_cycles(DELAY_UNIT);
+}
 
 int main(void)
 {
@@ -45,9 +58,9 @@ int main(void)
             uint32_t off = PERIOD_CYCLES - on;             /* low time  */
 
             __R30 |=  P9_16_R30_BIT;   /* raise pulse */
-            __delay_cycles(on);
+            delay_cycles(on);
             __R30 &= ~P9_16_R30_BIT;   /* drop pulse */
-            __delay_cycles(off);
+            delay_cycles(off);
         }
     }
 }
