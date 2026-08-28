@@ -1028,3 +1028,40 @@ sibling pin on the same bank as P8_13 (line 28) — also correct.
   broken (swap wire / inspect).
 - Status: CONTROL TEST PENDING (rig self-test P8_15<->P8_13).
 
+### CONTROL TEST RUN (rig self-test P8_15<->P8_13) -> INVALID (user error)
+- User repeated: `sudo ./gpio_toggle gpiochip1 15 6` then `sudo ./loopback_probe 6`.
+- RESULT: total transitions: 0. User asked "why is it saying p9_29 again".
+- TWO TOOL BUGS FOUND (both MY fault, not the board):
+  1. loopback_probe printed hardcoded "P9_29 pad never toggled" regardless of
+     which pin it actually read. FIXED: message is now pin-generic + takes
+     chip/line args.
+  2. MORE IMPORTANTLY: the control was run WRONG. gpio_toggle is a userspace
+     program that runs 6s then EXITS; user ran it (twice) and then started
+     loopback_probe AFTER it finished -> read pin was static -> 0 transitions
+     is EXPECTED, NOT a rig failure.
+- Also: original loopback_probe sampled at 100 ms while the transmitter toggled
+  at 5 Hz (100 ms period) -> sampler/transmitter ALIASING could miss edges and
+  produce a false 0 even for a real signal. This taints the original "VALID
+  loopback #1" 0-transition reading too.
+- FIXES (commit 4e81ac6, pushed):
+  - loopback_probe: pin-generic message; now samples at 500 Hz (2 ms) so a 5 Hz
+    signal cannot be aliased away; usage: sudo ./loopback_probe [secs] [chip] [line]
+  - NEW loopback_self: ONE program drives a pin AND reads another in the same
+    tight loop (sample read side 5x per 100 ms drive step). No two-shell race,
+    no aliasing. Usage:
+      sudo ./loopback_self gpiochip1 15 gpiochip1 28 6   # drive P8_15, read P8_13
+    ~30 transitions => rig good. 0 => wire/read-pin fault.
+- CONCLUSION: the control test was INCONCLUSIVE (invalid run), and the original
+  "VALID loopback #1" 0-transition result is NOW SUSPECT due to aliasing.
+  MUST re-run with loopback_self before concluding P9_29 pad is dead.
+- Status: RIG SELF-TEST PENDING with corrected loopback_self tool.
+
+### ACTION for user (safe, decisive)
+1. `git pull && make clean && make` on the board (gets loopback_self).
+2. Jumper P8_15<->P8_13 (small P8 header; leave P9_29 alone).
+3. `sudo ./loopback_self gpiochip1 15 gpiochip1 28 6`
+   - ~30 -> rig proven; THEN move jumper to P9_29<->P8_13, load gpo_self_test,
+     and run `sudo ./loopback_probe 6` (now 500 Hz, no aliasing) to finally
+     settle the P9_29 question.
+   - 0   -> swap the wire; if still 0, read-pin/wire fault, not P9_29.
+
