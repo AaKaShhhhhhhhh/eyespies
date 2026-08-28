@@ -49,4 +49,4 @@
 			0x9bc 0x24  /* P9_29 (gpmc_csn3) -> Mode 4 (PRU0 r30.1), pull-down */
 		>;
 	};
-};
+a};
