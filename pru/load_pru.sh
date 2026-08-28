@@ -18,11 +18,34 @@
 # what actually sticks. See pru_servo.c header for the rationale.
 set -e
 
-PRU="$1"
-FW="$2"
-[ -z "$PRU" ] && { echo "usage: sudo $0 <pru0|pru1> <firmware.out>"; exit 1; }
-[ -z "$FW"  ] && { echo "usage: sudo $0 <pru0|pru1> <firmware.out>"; exit 1; }
-[ -f "$FW"  ] || { echo "error: $FW not found"; exit 1; }
+# 'stop' is a standalone action (no firmware needed).
+if [ "$1" = "stop" ]; then
+    PRU="${2:-pru0}"          # default to pru0 if no core given
+    FW=""                     # not used in stop mode
+else
+    PRU="$1"
+    FW="$2"
+    [ -z "$PRU" ] && { echo "usage: sudo $0 <pru0|pru1> <firmware.out>"; exit 1; }
+    [ -z "$FW"  ] && { echo "usage: sudo $0 <pru0|pru1> <firmware.out>"; exit 1; }
+    [ -f "$FW"  ] || { echo "error: $FW not found"; exit 1; }
+fi
+
+# Stop mode: just halt the PRU and exit.
+if [ "$1" = "stop" ]; then
+    if [ "$(cat "$RPROC/state" 2>/dev/null)" = "running" ]; then
+        echo "stop  -> $RPROC/state"
+        echo stop | sudo tee "$RPROC/state" >/dev/null
+        for i in $(seq 1 20); do
+            [ "$(cat "$RPROC/state" 2>/dev/null)" = "offline" ] && break
+            sleep 0.1
+        done
+    else
+        echo "already stopped (state: $(cat "$RPROC/state" 2>/dev/null))"
+    fi
+    echo "----------------------------------------"
+    echo "state : $(cat "$RPROC/state")"
+    exit 0
+fi
 
 # On 6.x the remoteproc node /name is the DT address, not "pruN":
 #   pru0 -> 4a334000.pru   pru1 -> 4a338000.pru   (so match by address)
