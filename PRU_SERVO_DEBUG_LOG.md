@@ -929,3 +929,27 @@ The "line 14" number in chat is a documentation slip, not a code bug. The
 rig self-test command above uses P8_15 (gpiochip1 line 15) which is the
 sibling pin on the same bank as P8_13 (line 28) — also correct.
 
+---
+
+## 25. BOARD #34 — SHORT / REBOOT INCIDENT (SAFETY)
+- Action: user installed the correct loopback wire (one end P9_29, other P8_13)
+  and the board REBOOTED ON ITS OWN.
+- Likely cause: the servo + 5V phone-charger harness was STILL attached to
+  P9_29. External 5V supply (not guaranteed common ground with the BBB)
+  presents an off-reference voltage on the servo signal line. Bridging P9_29
+  to P8_13 (a 3.3V GPIO input) under that condition drove current into the
+  BBB 3.3V domain -> PMIC brown-out reset. A bare PRU-output->GPIO-input
+  wire alone should NOT reboot; the externally-powered servo harness is the
+  hazard.
+- Immediate mitigation: removed ALL wiring (servo + charger + jumpers),
+  power-cycled, confirmed clean boot (no heat, no PMIC error in dmesg).
+- SAFETY RULE (going forward):
+  - Loopback tests run with the SERVO 100% DETACHED from P9_29.
+  - Never connect an externally-powered servo (separate 5V supply) to a BBB
+    pin without common ground + level/power isolation (buffer/driver board).
+  - Test in pure isolation: rig self-test (P8_15->P8_13) first, then the
+    P9_29->P8_13 loopback.
+- If the board reboots even on the P8_15->P8_13 self-test (servo fully off),
+  the jumper wire itself is bad (bridging a power pin) -> use a different wire.
+- Status: board recovered. Awaiting isolated retest (servo detached).
+
