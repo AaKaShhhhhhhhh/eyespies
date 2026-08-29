@@ -14,7 +14,18 @@ PWM_OBJS       = pmw/pmw_servo.o          # still linked for now (unused after P
 PRU_COMMS_OBJS = pru/pru_comms.o          # ARM/Linux side: writes the whiteboard
 OBJS = $(CAPTURE_OBJS) $(CONTROL_OBJS) $(DETECTION_OBJS) $(PWM_OBJS) $(PRU_COMMS_OBJS)
 
-.PHONY: all turret clean
+# Live ASCII camera viewer (headless, no extra libs). Grabs frames exactly like
+# the turret and renders a greyscale preview to the SSH terminal with '+' = centre
+# and 'X' = motion centroid. Does NOT touch the PRU/servo. Great for sanity-checking
+# the camera + detection before blaming the servo.
+#   make cam_view && ./cam_view
+capture/cam_view.o: capture/cam_view.c capture/capture.h detection/motion_detect.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ capture/cam_view.c
+
+cam_view: capture/cam_view.o $(OBJS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ capture/cam_view.o $(OBJS) $(LIBS)
+
+.PHONY: all turret cam_view clean
 
 all: $(OBJS)
 	@echo "Objects built. Run: make turret   (to link the final binary)"
