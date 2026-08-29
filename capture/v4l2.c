@@ -21,7 +21,6 @@ int open_device(const char *dev_path) {
     }
     return fd;
 }
-
 /* ---------------------------------------------------------------------------
  * UVC cameras (especially cheap ones) expose MULTIPLE /dev/video* nodes:
  *   - one real VIDEO_CAPTURE node (the actual frames)
@@ -192,7 +191,7 @@ void save_to_file(const void *buffer, size_t size) {
     }
 }
 
-void capture_loop(int fd, int buffer_count, int width, int height , AxisState *pan , AxisState *tilt , const char *pan_pwm_path , const char *tilt_pwm_path) {
+void capture_loop(int fd, int buffer_count, int width, int height , AxisState *pan , AxisState *tilt , void (*pru_set_angle)(pru_axis_t axis, float angle_degrees)) {
     
     const float pan_gain = 0.08f;
     const float tilt_gain = 0.08f;
@@ -258,7 +257,7 @@ void capture_loop(int fd, int buffer_count, int width, int height , AxisState *p
             float pan_new = clamp_angle(
                 smooth_angle(pan->current_angle , pan_raw , smoothning) , 0 , 180);
             if(should_update(pan->current_angle , pan_new , deadband)) {
-                servo_set_angle(pan_pwm_path , pan_new);
+                pru_set_angle(PAN, pan_new);
                 pan->current_angle = pan_new;
             }
 
@@ -267,7 +266,7 @@ void capture_loop(int fd, int buffer_count, int width, int height , AxisState *p
             float tilt_new = clamp_angle(
                 smooth_angle(tilt->current_angle , tilt_raw , smoothning) , 0 , 180);
             if(should_update(tilt->current_angle , tilt_new , deadband)) {
-                servo_set_angle(tilt_pwm_path , tilt_new);
+                pru_set_angle(TILT, tilt_new);
                 tilt->current_angle = tilt_new;
             }
 

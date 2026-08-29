@@ -4,14 +4,15 @@
 
 CC      = gcc
 CFLAGS  = -Wall -Wextra -g -O2
-INCLUDES = -I. -I./capture -I./control -I./detection -I./pmw
+INCLUDES = -I. -I./capture -I./control -I./detection -I./pmw -I./pru
 LIBS    = -lpthread -lm -lrt -lgpiod
 
 CAPTURE_OBJS   = capture/v4l2.o
 CONTROL_OBJS   = control/control_loop.o
 DETECTION_OBJS = detection/motion_detect.o
-PWM_OBJS       = pmw/pmw_servo.o
-OBJS = $(CAPTURE_OBJS) $(CONTROL_OBJS) $(DETECTION_OBJS) $(PWM_OBJS)
+PWM_OBJS       = pmw/pmw_servo.o          # still linked for now (unused after PRU switch)
+PRU_COMMS_OBJS = pru/pru_comms.o          # ARM/Linux side: writes the whiteboard
+OBJS = $(CAPTURE_OBJS) $(CONTROL_OBJS) $(DETECTION_OBJS) $(PWM_OBJS) $(PRU_COMMS_OBJS)
 
 .PHONY: all turret clean
 
@@ -33,6 +34,12 @@ detection/motion_detect.o: detection/motion_detect.c detection/motion_detect.h \
 
 pmw/pmw_servo.o: pmw/pmw_servo.c pmw/pmw_servo.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ pmw/pmw_servo.c
+
+# ARM/Linux side of the PRU whiteboard. NOTE: this is NOT the PRU firmware
+# (pru/pru_servo.c is built by pru-gcc, not here). This is normal ARM code that
+# runs in the turret process and mmaps /dev/mem.
+pru/pru_comms.o: pru/pru_comms.c pru/pru_comms.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ pru/pru_comms.c
 
 turret: main.c $(OBJS)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ main.c $(OBJS) $(LIBS)

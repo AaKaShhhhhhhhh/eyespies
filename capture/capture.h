@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include "control/control_loop.h"   /* for AxisState */
+#include "pru/pru_comms.h"          /* for pru_axis_t (PAN/TILT) + pru_set_angle */
 
 typedef struct {
     int x;
@@ -19,9 +20,12 @@ void map_buffers(int fd, int index);
 void queue_all_buffers(int fd, int buffers);
 void start_streaming(int fd);
 void save_to_file(const void *buffer, size_t size);
+/* The loop is told HOW to move a servo via a function pointer. Today that is
+   pru_set_angle(axis, angle_degrees) (writes to the PRU whiteboard). Any
+   backend with that signature would work, which is why it's a pointer. */
 void capture_loop(int fd, int buffer_count, int width, int height,
                   AxisState *pan, AxisState *tilt,
-                  const char *pan_pwm_path, const char *tilt_pwm_path);
+                  void (*pru_set_angle)(pru_axis_t axis, float angle_degrees));
 void stop_streaming(int fd);
 void cleanup(int fd, int buffer_count);
 
