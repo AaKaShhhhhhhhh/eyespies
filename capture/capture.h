@@ -21,7 +21,7 @@ void set_format(int fd, int width, int height);
    compiled on its own) can read a dequeued frame's pixels the same way
    capture_loop() does at v4l2.c:249. Without this, cam_view.c gets
    "'buffer_addresses' undeclared" at compile time. */
-extern void *buffer_addresses[4];
+extern void* buffer_addresses[4];
 extern size_t buffer_sizes[4];
 
 int request_buffers(int fd, int count);
