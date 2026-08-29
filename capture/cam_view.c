@@ -57,7 +57,7 @@ int main(int argc, char *argv[]) {
     int n = request_buffers(fd, 4);
     if (n < 0) { close(fd); return 1; }
     for (int i = 0; i < n; i++) map_buffers(fd, i);
-    queue_all_buffers(fd, n);
+    queue_all_buffers(fd, n);   /* capture.h prototype: queue_all_buffers(int fd, int buffers) */
     start_streaming(fd);
     motion_reset();   /* seed background like the turret does */
 
@@ -84,7 +84,7 @@ int main(int argc, char *argv[]) {
             perror("dqbuf"); usleep(10000); continue;
         }
 
-        const unsigned char *frame = (const unsigned char *)buffer_addresses[buff.index];
+        const unsigned char *frame = (const unsigned char *)buffers[buff.index].addr;
 
         /* ---- run the SAME detector the turret uses, so we test it for real -- */
         Position pos = find_motion_position((unsigned char *)frame, W, H);
