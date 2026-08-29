@@ -1,16 +1,17 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g
+INCLUDES = -I..
 
-# Object files
-OBJS = color_threshold.o
+# Object files (the detection module the top-level Makefile actually links).
+OBJS = motion_detect.o
 
 all: libdetection.a
 
 libdetection.a: $(OBJS)
 	ar rcs $@ $^
 
-color_threshold.o: color_threshold.c color_threshold.h
-	$(CC) $(CFLAGS) -c -o $@ $<
+motion_detect.o: motion_detect.c motion_detect.h ../capture/capture.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ motion_detect.c
 
 clean:
 	rm -f *.o *.a

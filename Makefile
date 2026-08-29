@@ -1,7 +1,6 @@
 # Top-level Makefile — Camera Turret (single-board, BeagleBone Black)
 # Camera + detection + control + PWM all run in ONE process on the board.
-# The old two-machine network bridge (main_debian.c / main_bbb.c / websocket/)
-# has been removed — see INTEGRATION_GUIDE.md.
+# (See INTEGRATION_GUIDE.md for the future Yocto image / dashboard packaging.)
 
 CC      = gcc
 CFLAGS  = -Wall -Wextra -g -O2

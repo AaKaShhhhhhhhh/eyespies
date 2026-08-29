@@ -5,7 +5,7 @@
 #   <pruN> is pru0 or pru1  (the core you compiled for with -mmcu=am335x.pruN)
 #
 # Example:
-#   sudo ./load_pru.sh pru0 pru1_servo.pru1.out   # (built with -mmcu=am335x.pru0)
+#   sudo ./load_pru.sh pru0 pru_servo.out          # (built with -mmcu=am335x.pru0)
 #
 # Why a script (not pasted commands): pasting the cp/tee/echo steps in one
 # block loses newlines and concatenates commands (that broke your first load).

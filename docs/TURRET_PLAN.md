@@ -1,308 +1,406 @@
-# Camera Turret Project — Plan & Coding Guide
+# Camera Turret — Full Project Plan (plain language, file-by-file)
 
-> **Purpose:** a beginner-friendly roadmap for turning the PRU servo win into a
-> working camera turret: USB camera → detection → tracking → PRU-driven pan/tilt
-> servos. No ML code yet — just the architecture, the changes, and the **templates**
-> you fill in. Every C construct that trips people up is flagged with a 💡 CARD and,
-> where it matters for **semiconductor/firmware coding interviews**, a 🏢 INTERVIEW tag.
->
-> **Companion docs:** `PRU_SERVO_DEBUG_LOG.md` (concepts), `PRU_SERVO_RAW_JOURNAL.md` (raw log).
+> Read this top to bottom once. It tells you EXACTLY which file to open, what to
+> change, what to create, and what to delete — for every step. No guessing.
 
 ---
 
-## 0. The one mental model to keep
+## 0. The 30-second truth (read this first)
 
-```
-   USB camera ──V4L2 capture──▶ ARM userspace (the "brains")
-                                      │
-                          motion detect / FOMO  ──▶  target (x,y)
-                                      │
-                                  PID controller   ──▶  setpoint (pan_us, tilt_us)
-                                      │
-                       pru_comms writes to PRU shared RAM (0x4A310000)
-                                      │
-                                      ▼
-                        PRU0 firmware  ◀── already muxed on P9_31 + P9_30
-                        50 Hz PWM out  ──▶ PAN  servo (P9_31, R30 bit 0)
-                                       ──▶ TILT servo (P9_30, R30 bit 1)
-```
+**What already works (proven on the board):**
+- The PRU firmware `pru/pru_servo.c` moves an MG90S servo on **P9_31** by writing
+  directly to the PRU's `__R30` register. We confirmed: *"THE SERVO IS MOVINGGGGGG"*.
+- `pru/load_pru.sh` loads that firmware safely.
 
-**Key insight:** the PRU already produces *perfectly stable* 50 Hz PWM. The ARM only
-has to tell it *where to point*. Detection can run at 2 FPS or 30 FPS — the servos
-stay smooth because the PRU holds the last pulse until the next setpoint.
+**What the turret does TODAY (the `turret` binary):**
+- Camera (`capture/v4l2.c`) grabs frames.
+- `detection/motion_detect.c` finds "where something moved" → a pixel position.
+- `control/control_loop.c` turns that position into pan/tilt angles.
+- **`pmw/pmw_servo.c`** drives the servo — using **libgpiod** (software bit-banged
+  PWM on P9_14 / P9_16). **NOT the PRU.**
 
-> 🏢 **INTERVIEW:** this "hard-realtime I/O on a co-processor, logic on the app
-> processor" split is exactly how real camera/gimbal/robotics firmware is architected
-> (NVIDIA Jetson, Qualcomm, DJI gimbals). Be able to draw this diagram and justify
-> *why* the PWM is on the PRU.
+**The goal of this plan:** move the servo control from `pmw` (libgpiod) to the PRU
+(like the proven demo), so the servo runs rock-steady on the PRU, and later swap
+the "motion detect" brain for an ML brain (FOMO).
 
 ---
 
-## 1. The ARM ↔ PRU contract (design this FIRST)
+## 1. Your two questions, answered
 
-We proved earlier that **ARM `/dev/mem` writes to `0x4A310000` (PRU data RAM, global
-view) WORK** on 6.x — only the Control Module is blocked. So the command channel is
-plain shared memory. No drivers, no syscalls per frame.
+### Q: "What is `color_threshold.c` for? We use FOMO, right?"
+- `color_threshold.c` and `color_threshold.h` are **100% commented out** (every line
+  starts with `//`). They are dead code from an early "detect by color" idea.
+- The top `Makefile` does **not** compile them. Only `detection/Makefile` builds
+  them into a `.a` library that **nobody links**. So they do nothing.
+- FOMO is the future ML brain — it will replace `detection/motion_detect.c`, not
+  `color_threshold.c`. `color_threshold.c` is just clutter.
+- **Action: DELETE `detection/color_threshold.c` and `detection/color_threshold.h`.**
 
-| View | Address | Used by |
-|------|---------|---------|
-| PRU-local | `0x00010000` | firmware reads here |
-| ARM-global | `0x4A310000` | `pru_comms.c` writes here |
+### Q: "What is the `pmw` folder for? We use PRU directly, right?"
+- **Correction:** the turret does **NOT** use the PRU yet. `main.c` and
+  `capture/v4l2.c` call `servo_set_angle(...)` which lives in `pmw/pmw_servo.c`.
+  That file uses **libgpiod** to toggle GPIO pins in software (bit-banged PWM).
+- The PRU firmware `pru/pru_servo.c` is a *separate* standalone demo, not wired into
+  `main.c`.
+- So `pmw` **is** in use today. The plan below REPLACES `pmw` with a new
+  `pru/pru_comms.c` that talks to the PRU. After the swap, `pmw` can be deleted.
 
-### The shared struct (define it identically in BOTH `pru_servo.c` and `pru_comms.c`)
+---
+
+## 2. Data flow — today vs target
+
+```
+TODAY (libgpiod):
+  camera ─▶ motion_detect ─▶ control_loop (angles) ─▶ pmw/pmw_servo.c
+                                                              │
+                                                        libgpiod GPIO
+                                                              │
+                                                         servo pins (P9_14/P9_16)
+
+TARGET (PRU):
+  camera ─▶ motion_detect/FOMO ─▶ control_loop (angles) ─▶ pru_comms.c
+                                                                  │
+                                              writes angles into PRU shared RAM
+                                                                  │
+                                                            PRU firmware
+                                                                  │
+                                                         servo pins (P9_31/P9_30)
+```
+
+The only thing that changes in the *logic* is the last hop: instead of
+`servo_set_angle(pwm_path, angle)` (libgpiod), we call
+`pru_set_angle(axis, angle)` (writes to PRU RAM). The camera, detection, and angle
+math stay the same.
+
+---
+
+## 3. File-by-file map (what each file is, and what we do with it)
+
+| File | What it does today | Plan action |
+|------|--------------------|-------------|
+| `main.c` | Entry point. Sets PWM paths, starts capture. | **EDIT** — use PRU paths, not `/sys/class/pwm`. |
+| `capture/v4l2.c` | Grabs frames, calls motion detect, calls `servo_set_angle`. | **EDIT** — replace `servo_set_angle` with `pru_set_angle`. |
+| `capture/capture.h` | Defines `Position` + `AxisState`. | **KEEP** (small add maybe). |
+| `detection/motion_detect.c/.h` | Centroid of motion → position. | **KEEP now**; later REPLACE with FOMO. |
+| `detection/color_threshold.c/.h` | Dead, commented out. | **DELETE**. |
+| `control/control_loop.c/.h` | Angle math (gain/smooth/clamp). | **KEEP** (no change). |
+| `pmw/pmw_servo.c/.h` | libgpiod servo driver. | **KEEP now**; DELETE after PRU swap. |
+| `pru/pru_servo.c` | PRU firmware (1-axis sweep on P9_31). | **EDIT** — 2 axes, read setpoints from RAM. |
+| `pru/load_pru.sh` | Loads firmware safely. | **KEEP** (add P9_30 mux). |
+| `pru/Makefile` | Builds `pru_servo.out`. | **KEEP**. |
+| `pru/pru_comms.c` + `pru/pru_comms.h` | **NEW** — ARM side writes angles to PRU RAM. | **CREATE**. |
+| `Makefile` (top) | Builds `turret` binary. | **EDIT** — drop `pmw`, add `pru_comms`. |
+
+---
+
+## 4. The PRU <-> ARM contract (the shared memory layout)
+
+The ARM (the `turret` program) and the PRU **cannot call each other's functions**.
+They talk through a shared block of RAM. On the AM335x:
+
+- PRU sees it at local address `0x00010000`.
+- ARM sees the SAME physical RAM at `0x4A310000`.
+- ARM opens `/dev/mem` and writes there (this works on kernel 6.x — proven).
+
+We define ONE struct that BOTH sides use, byte-for-byte:
 
 ```c
-/* shared.h  — include in BOTH the PRU firmware and the ARM comms code */
-#define SHM_MAGIC 0xBAD0BAD0u
-
-struct servo_cmd {
-    uint32_t magic;     /* must equal SHM_MAGIC or PRU ignores the block   */
-    uint32_t seq;       /* increments each time ARM updates setpoint       */
-    uint32_t pan_us;    /* 1000..2000  (microseconds of pulse width)       */
-    uint32_t tilt_us;   /* 1000..2000                                       */
-    uint32_t flags;     /* bit0 = "park at center", bit1 = "halt"           */
-};
+/* Put this identical struct in: pru/pru_servo.c  AND  pru/pru_comms.h */
+typedef struct {
+    volatile uint32_t magic;   /* must equal 0x50524F55 ("PROU") so PRU knows ARM wrote */
+    volatile uint32_t pan_us;  /* pulse width in microseconds for P9_31 (pan)  */
+    volatile uint32_t tilt_us; /* pulse width in microseconds for P9_30 (tilt) */
+    volatile uint32_t seq;     /* increments each time ARM updates -> PRU detects new data */
+    volatile uint32_t flags;   /* bit0 = stop/halt request */
+} pru_servo_cmd_t;
 ```
 
-> 💡 **CARD — `struct` is just a labeled block of memory.** The PRU and ARM agree on
-> the byte layout; whoever writes `pan_us` at offset 4 must read it at offset 4. Same
-> file, same `#pragma`/padding → identical layout. Keep all fields `uint32_t` so there
-> is **no alignment/padding surprise** between the two toolchains.
->
-> 🏢 **INTERVIEW:** "How do two cores share data without a lock?" → single-writer /
-> single-reader (SPSC) shared memory + a sequence number. A classic
-> producer–consumer question at NXP/TI/Qualcomm.
+Angle → microseconds helper (same formula on both sides):
+- 0°   → 1000 µs
+- 90°  → 1500 µs (center)
+- 180° → 2000 µs
 
-**Who writes what:** ARM writes `magic`, `seq`, `pan_us`, `tilt_us`. PRU only *reads*
-them (and could echo back `seq` it last applied into `flags` if you want a handshake).
+```c
+static inline uint32_t angle_to_us(float deg) {
+    if (deg < 0)   deg = 0;
+    if (deg > 180) deg = 180;
+    return (uint32_t)(1000.0f + (deg / 180.0f) * 1000.0f);
+}
+```
 
 ---
 
-## 2. Milestones (your coding checklist)
+## 5. Milestone 2 — Edit the PRU firmware (`pru/pru_servo.c`)
 
-Work top-to-bottom. Each milestone has: **Goal / Template / Changes / Test**.
+**Goal:** make it 2-axis (P9_31 = pan/R30_0, P9_30 = tilt/R30_1) and read the
+setpoints from shared RAM instead of sweeping.
 
-### Milestone 1 — Two-axis PRU firmware (no camera yet)
+Steps:
+1. Add the shared struct (copy from section 4) at the top.
+2. Point a pointer at the shared RAM: `pru_servo_cmd_t *cmd = (pru_servo_cmd_t *)0x00010000;`
+3. Add the second pin: `#define P9_30_R30_BIT (1u << 1)`.
+4. In `main()`, loop forever: read `cmd->pan_us` / `cmd->tilt_us`, convert µs →
+   PRU cycles (1 cycle = 5 ns at 200 MHz → cycles = us * 200), and emit the pulse
+   on the right bit.
 
-**Goal:** PRU reads `servo_cmd` from `0x00010000` and bit-bangs 50 Hz PWM on R30 bit 0
-(P9_31, PAN) and bit 1 (P9_30, TILT). If no valid `magic`, hold center (1500 µs).
-
-**Changes to `pru/pru_servo.c`:**
-- Add `#include "shared.h"`.
-- Map the command struct: `volatile struct servo_cmd *cmd = (volatile struct servo_cmd *)0x00010000;`
-- Loop: for each 20 ms frame, split into PAN pulse then TILT pulse (or interleave),
-  using the constant-`__delay_cycles` helper we already use for one channel.
-- Read `cmd->pan_us`/`cmd->tilt_us`; clamp to 1000..2000; if `cmd->magic != SHM_MAGIC`
-  use 1500.
-
-**Template (skeleton — fill the timing):**
+Template (fill the blanks):
 
 ```c
-#include "shared.h"
+#include <stdint.h>
+#include "resource_table_empty.h"
+
 volatile register uint32_t __R30 asm("r30");
 
-/* constant delay so the PRU compiler is happy (no variable __delay_cycles) */
-static inline void us_delay(uint32_t us) {
-    /* ~5 cycles per loop at 200 MHz -> tune this constant */
-    for (uint32_t i = 0; i < us * 40; i++) __delay_cycles(5);
+#define P9_31_R30_BIT  (1u << 0)   /* pan  */
+#define P9_30_R30_BIT  (1u << 1)   /* tilt */
+
+#define PERIOD_US 20000u           /* 20 ms = 50 Hz */
+#define DELAY_UNIT 1000u
+
+typedef struct {
+    volatile uint32_t magic, pan_us, tilt_us, seq, flags;
+} pru_servo_cmd_t;
+
+static inline void delay_cycles(uint32_t cycles) {
+    uint32_t units = cycles / DELAY_UNIT;
+    while (units--) __delay_cycles(DELAY_UNIT);
+}
+/* us -> cycles at 200 MHz: 1 us = 200 cycles */
+static inline void pulse(uint32_t bit, uint32_t us) {
+    uint32_t on  = us * 200u;
+    uint32_t off = (PERIOD_US - us) * 200u;
+    __R30 |=  bit;  delay_cycles(on);
+    __R30 &= ~bit;  delay_cycles(off);
 }
 
 int main(void) {
-    volatile struct servo_cmd *cmd = (volatile struct servo_cmd *)0x00010000;
-    uint32_t pan = 1500, tilt = 1500;
-
+    pru_servo_cmd_t *cmd = (pru_servo_cmd_t *)0x00010000;
+    __R30 &= ~(P9_31_R30_BIT | P9_30_R30_BIT);
+    uint32_t last_seq = 0;
     while (1) {
-        if (cmd->magic == SHM_MAGIC) {
-            pan  = cmd->pan_us  < 1000 ? 1000 : (cmd->pan_us  > 2000 ? 2000 : cmd->pan_us);
-            tilt = cmd->tilt_us < 1000 ? 1000 : (cmd->tilt_us > 2000 ? 2000 : cmd->tilt_us);
+        if (cmd->magic == 0x50524F55u) {          /* "PROU" -> ARM has written */
+            if (cmd->seq != last_seq) {            /* new command since last loop */
+                last_seq = cmd->seq;
+                pulse(P9_31_R30_BIT, cmd->pan_us); /* pan  */
+                pulse(P9_30_R30_BIT, cmd->tilt_us);/* tilt */
+            } else {
+                /* no new command: re-emit last pulse so servo holds position */
+                pulse(P9_31_R30_BIT, cmd->pan_us);
+                pulse(P9_30_R30_BIT, cmd->tilt_us);
+            }
         }
-        /* PAN pulse */
-        __R30 |=  (1u << 0);  us_delay(pan);  __R30 &= ~(1u << 0);  us_delay(20000 - pan);
-        /* TILT pulse */
-        __R30 |=  (1u << 1);  us_delay(tilt); __R30 &= ~(1u << 1);  us_delay(20000 - tilt);
     }
-    return 0;
 }
 ```
+> Build on the board: `cd ~/eyespies/pru && make`. That produces `pru_servo.out`.
 
-> 💡 **CARD — `volatile`** here means "this memory can change without the C code
-> knowing" (the ARM writes it). Without `volatile` the compiler may cache the value in
-> a register and never re-read it. **This is the single most-asked embedded C question.**
->
-> 🏢 **INTERVIEW:** "Why `volatile` on memory-mapped / shared registers?" → prevents
-> optimizer from assuming the value is unchanged. Always pair with `volatile` for HW
-> regs and SPSC shared memory.
->
-> 💡 **CARD — `1u << 0`** is a **bit set**: `1u` shifted left 0 = `0b0001`. `1u << 1`
-> = `0b0010`. `|=` sets that bit; `&= ~(1u<<n)` clears it. This is the entire R30
-> bit-mapping we fought for — bit N of R30 appears on the ball muxed to PRU R30_N.
+💡 **C CARD — `volatile`:** we mark the struct `volatile` because the PRU reads it
+while ARM writes it *outside any function order the compiler can see*. Without
+`volatile` the compiler may cache the value in a register and never re-read it.
+`volatile` = "this can change behind my back; always read from memory."
 
-**Also:** add the TILT mux to `uEnv.txt`:
-```bash
-sudo sed -i '/^uenvcmd=/d' /boot/firmware/uEnv.txt
-printf 'uenvcmd=mw.l 0x44E10990 0x05; mw.l 0x44E10998 0x05\n' | sudo tee -a /boot/firmware/uEnv.txt
-sudo reboot
-```
-(`0x44E10998` = P9_30 pad, mode 5 = PRU0 R30_1 — confirmed in the cape DTS.)
-
-**Test:** a small ARM CLI (`pru_comms` in M2) writes fixed `pan_us`/`tilt_us`; both
-servos move to the angle. No camera involved.
+🏢 **INTERVIEW:** "Why `volatile` for hardware / shared memory?" → tells the
+compiler the value may change asynchronously (by HW or another core), so it must
+not optimize away reads/writes.
 
 ---
 
-### Milestone 2 — `pru_comms.c` (the ARM side of the channel)
+## 6. Milestone 3 — Create `pru/pru_comms.c` + `pru/pru_comms.h` (ARM side)
 
-**Goal:** a tiny module that `mmap`s `/dev/mem` at `0x4A310000` and writes setpoints.
-Everything else in the turret calls this instead of touching PWM sysfs.
+This is the ONLY new C file. It runs on the ARM (inside the `turret` program) and
+writes angles into the PRU's shared RAM.
 
-**New file `pru/pru_comms.c` + `pru/pru_comms.h`:**
-
+**`pru/pru_comms.h`:**
 ```c
-/* pru_comms.h */
-#pragma once
-#include <stdint.h>
-int  pru_comms_init(void);                 /* mmap the shared RAM */
-void pru_comms_set(uint32_t pan_us, uint32_t tilt_us);  /* write a setpoint */
-void pru_comms_close(void);
+#ifndef PRU_COMMS_H
+#define PRU_COMMS_H
+void pru_comms_init(void);                 /* call once at startup */
+void pru_set_angle(int axis, float deg);   /* axis 0=pan,1=tilt; deg 0..180 */
+void pru_comms_stop(void);                 /* optional: ask PRU to halt */
+#endif
 ```
 
+**`pru/pru_comms.c`:**
 ```c
-/* pru_comms.c  — skeleton; fill error handling */
 #include "pru_comms.h"
-#include "shared.h"
+#include <stdint.h>
+#include <stdio.h>
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <unistd.h>
+#include <sys/mman.h>
 
-static volatile struct servo_cmd *g_cmd = NULL;
-static int g_memfd = -1;
+/* SAME struct as the firmware (byte-for-byte) */
+typedef struct {
+    volatile uint32_t magic, pan_us, tilt_us, seq, flags;
+} pru_servo_cmd_t;
 
-int pru_comms_init(void) {
-    g_memfd = open("/dev/mem", O_RDWR | O_SYNC);   /* O_SYNC = uncached/strongly-ordered */
-    if (g_memfd < 0) return -1;
-    void *map = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE,
-                     MAP_SHARED, g_memfd, 0x4A310000);
-    if (map == MAP_FAILED) return -1;
-    g_cmd = (volatile struct servo_cmd *)map;
-    g_cmd->magic = SHM_MAGIC;
-    g_cmd->seq   = 0;
-    g_cmd->pan_us = 1500; g_cmd->tilt_us = 1500;
-    return 0;
+#define PRU_RAM_PHYS 0x4A310000u   /* ARM view of PRU shared RAM */
+static pru_servo_cmd_t *cmd = NULL;
+static uint32_t seq_counter = 0;
+
+static uint32_t angle_to_us(float deg) {
+    if (deg < 0)   deg = 0;
+    if (deg > 180) deg = 180;
+    return (uint32_t)(1000.0f + (deg / 180.0f) * 1000.0f);
 }
 
-void pru_comms_set(uint32_t pan_us, uint32_t tilt_us) {
-    if (!g_cmd) return;
-    g_cmd->pan_us  = pan_us;
-    g_cmd->tilt_us = tilt_us;
-    g_cmd->seq++;          /* tell PRU "fresh data is here" */
+void pru_comms_init(void) {
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) { perror("pru_comms: open /dev/mem"); return; }
+    /* map one page of the PRU shared RAM into our address space */
+    void *map = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                     MAP_SHARED, fd, (off_t)PRU_RAM_PHYS);
+    if (map == MAP_FAILED) { perror("pru_comms: mmap"); close(fd); return; }
+    cmd = (pru_servo_cmd_t *)map;
+    cmd->magic  = 0x50524F55u;   /* tell PRU ARM is alive */
+    cmd->pan_us = 1500;           /* center */
+    cmd->tilt_us= 1500;
+    cmd->seq    = 0;
+    cmd->flags  = 0;
+    close(fd);  /* fd can close; the mmap stays valid */
+}
+
+void pru_set_angle(int axis, float deg) {
+    if (!cmd) return;
+    uint32_t us = angle_to_us(deg);
+    if (axis == 0) cmd->pan_us  = us;
+    else            cmd->tilt_us = us;
+    cmd->seq = ++seq_counter;    /* bump seq so PRU picks up the new value */
+}
+
+void pru_comms_stop(void) {
+    if (cmd) cmd->flags |= 1u;   /* PRU firmware can check this to halt */
 }
 ```
 
-> 💡 **CARD — `mmap`** maps a file (here `/dev/mem`, the physical RAM) into your
-> process's address space, so you can poke `0x4A310000` with a normal pointer.
-> `MAP_SHARED` = writes go straight to the device. `O_SYNC` = don't let the CPU cache
-> the writes (critical for HW/shared memory).
->
-> 🏢 **INTERVIEW:** "How does userspace talk to hardware with no driver?" →
-> `open("/dev/mem") + mmap` (and why that needs `CAP_SYS_RAWIO` / root). Follow-up:
-> cache coherency, `O_SYNC`, memory barriers.
->
-> 💡 **CARD — pointer cast** `(volatile struct servo_cmd *)map` just says "treat this
-> raw byte pointer as a `servo_cmd` struct." The bytes at `0x4A310000` now read as
-> `magic`, `seq`, etc.
+💡 **C CARD — `mmap` / `/dev/mem`:** `mmap` asks the OS "map this physical memory
+into my program's address space so I can read/write it like a normal variable."
+`/dev/mem` is a special Linux file that lets a root program peek at *physical*
+RAM/registers. We map `0x4A310000` (the PRU's RAM) and then just write the struct.
 
-**Test:** `pru_comms_init(); pru_comms_set(2000, 1200);` → PAN to far right, TILT
-slightly up. Confirms the whole ARM→PRU path without any camera.
+🏢 **INTERVIEW:** "How does userspace talk to hardware on Linux?" → via
+`/dev/mem` + `mmap` (simple, needs root) or a kernel driver + `ioctl`/`sysfs`
+(proper, no root). For a PRU shared-RAM mailbox, `mmap` of `/dev/mem` is the
+standard lightweight approach.
 
 ---
 
-### Milestone 3 — Refactor capture + control to use `pru_comms`
+## 7. Milestone 4 — Rewire `main.c` and `capture/v4l2.c`
 
-**Goal:** stop writing PWM sysfs; call `pru_comms_set()` instead. Keep the PID logic
-intact — only the *output* changes.
+We replace the `pmw` calls with `pru_comms` calls. Tiny, surgical edits.
 
-**Changes:**
-- `main.c`: replace the `pan_pwm_path`/`tilt_pwm_path` args with a `pru_comms_init()`
-  call at startup.
-- `capture/v4l2.c` `capture_loop(...)`: the `const char *pan_pwm_path` /
-  `tilt_pwm_path` params become **unused** — you can drop them and instead pass a
-  callback or just call `pru_comms_set()` directly (simplest for now).
-- `pmw/pmw_servo.c`: **deprecate** — BBB 6.x has no `pwmchip`, and the PRU replaces it.
-  Leave the file but stop calling it (or delete later).
-- `control/control_loop.c`: the PID output (currently a PWM % or us value) is fed to
-  `pru_comms_set(pan_us, tilt_us)` instead of to the sysfs writer.
+**`main.c` changes:**
+- Add `#include "pru/pru_comms.h"` near the top.
+- Remove the two `#define ..._PWM_PATH` lines and the `pwm_set_period_ns` /
+  `pwm_enable` calls (those belong to `pmw`).
+- After `motion_reset();`, call `pru_comms_init();`
+- Pass nothing PWM-related into `capture_loop` anymore — change its signature.
 
-> 💡 **CARD — refactor vs rewrite.** You are NOT throwing code away; you are swapping
-> the *sink* of the PID. The `AxisState` / centroid math stays. This is the safe way to
-> evolve firmware: change one boundary, keep the tested core.
+**`capture/v4l2.c` changes:**
+- Replace `#include "pmw/pmw_servo.h"` with `#include "pru/pru_comms.h"`.
+- In `capture_loop`, where it now calls
+  `servo_set_angle(pan_pwm_path, pan_new);` → call `pru_set_angle(0, pan_new);`
+  and `servo_set_angle(tilt_pwm_path, tilt_new);` → `pru_set_angle(1, tilt_new);`
+- Remove the `pan_pwm_path` / `tilt_pwm_path` parameters from `capture_loop` and
+  its call in `main.c`.
 
-**Test:** run `make turret`, aim camera at a bright moving object → servos track it
-(up to motion-detect FPS, but smooth thanks to PRU).
+That's the whole swap. The motion detection and angle math are untouched.
 
 ---
 
-### Milestone 4 — End-to-end with motion detection (no ML)
+## 8. Milestone 5 — Update the top `Makefile`, build, test
 
-**Goal:** prove the full loop: camera → `motion_detect.c` centroid → PID → PRU servos.
-This validates everything *before* adding ML complexity.
+**Top `Makefile` edits:**
+- Change `PWM_OBJS = pmw/pmw_servo.o` → `PRU_COMMS_OBJS = pru/pru_comms.o`
+- Add `pru/pru_comms.o` into `OBJS`.
+- Remove `-lgpiod` from `LIBS` (no longer needed after dropping `pmw`).
+- Add a rule:
+  ```
+  pru/pru_comms.o: pru/pru_comms.c pru/pru_comms.h
+  	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ pru/pru_comms.c
+  ```
 
-**Check:** `detection/motion_detect.h` already exposes a centroid; `control_loop` already
-loops. Wire centroid → PID target. Done.
+**On the board, build + run:**
+```bash
+# 1) build the turret binary
+cd ~/eyespies
+make clean
+make turret
 
----
+# 2) load the 2-axis PRU firmware FIRST (before starting turret)
+cd ~/eyespies/pru
+make                       # builds pru_servo.out
+sudo bash load_pru.sh pru0 pru_servo.out
 
-### Milestone 5 — Add FOMO (optional, ML upgrade)
+# 3) in another shell, run the turret
+cd ~/eyespies
+sudo ./turret            # (pass /dev/videoX if auto-detect picks wrong node)
+```
+Servo should now track motion using the PRU on P9_31 (pan) + P9_30 (tilt).
 
-**Goal:** replace the motion centroid with a **FOMO monochrome 96×96 quantized TFLite**
-detector. Expect ~15–30 FPS (see perf notes in chat). Its bounding-box center becomes
-the PID target instead of the motion centroid.
-
-**Build notes:**
-- Use a **NEON-enabled TFLite** build for the A8 (Debian `tensorflow-lite` or a TFLM
-  build). Plain Eigen backend halves your FPS.
-- Run detection in its **own thread**, but remember it's one core — don't expect true
-  parallelism with capture+control.
-- Grayscale input cuts preprocessing 3×.
-
-> 🏢 **INTERVIEW:** "How would you profile / speed this up?" → measure model-alone FPS
-> first (`time ./detect --bench --iters 50`), then pipeline cost; use NEON, fix input
-> size, decouple threads, downscale.
-
----
-
-## 3. C Concept Cards you'll meet (and why interviews love them)
-
-| Construct | Where used | Interview weight |
-|-----------|-----------|------------------|
-| `volatile` | shared RAM, R30 | ⭐⭐⭐⭐⭐ "why volatile on HW regs" |
-| `struct` + identical layout on 2 cores | `servo_cmd` | ⭐⭐⭐⭐ SPSC shared memory |
-| pointer cast / `mmap` | `pru_comms.c` | ⭐⭐⭐⭐ userspace HW access |
-| bit ops `<<`, `|`, `& ~` | R30 mapping | ⭐⭐⭐⭐ register bitfields |
-| `uint32_t` fixed width | all shared data | ⭐⭐⭐ portability / no padding |
-| `for` delay loop (constant) | PRU timing | ⭐⭐⭐ why `__delay_cycles` needs a constant |
-| `O_SYNC` / `MAP_SHARED` | mmap flags | ⭐⭐⭐ cache coherency |
-| sequence number (SPSC) | `seq` | ⭐⭐⭐⭐ lock-free producer/consumer |
-| clamp `a<b?b:...` | sanitize us | ⭐⭐ defensive input |
-
-**Practice habit:** for every card above, before coding write *one line* explaining it
-in your own words in a `NOTES.md`. That's exactly how firmware interviews at TI/NXP/
-Qualcomm probe — they want you to *explain* the bit, not just use it.
+**Add P9_30 mux** (board-only, one time): in `/boot/firmware/uEnv.txt` add a line
+so P9_30 is also PRU mode 5 at boot:
+```
+uenvcmd=mw.l 0x44E10990 0x05; mw.l 0x44E10998 0x05
+```
+(P9_31 pad `0x44E10990`, P9_30 pad `0x44E10998`; both mode 5 = PRU0 R30.)
 
 ---
 
-## 4. Open items to confirm before coding
+## 9. Milestone 6 (later) — FOMO brain replaces motion detect
 
-- [ ] **Servo 5 V/GND pins** actually used (plan assumes P9_5/P9_6 5 V + P9_1/P9_2 GND).
-- [ ] **Tilt = P9_30** confirmed (alt PRU R30 balls: P9_28/29/30/31 from cape DTS).
-- [ ] **Park-at-center on `stop`?** (firmware sets 1500 µs before halting) — recommended.
-- [ ] Keep `pmw/pmw_servo.c` as reference or delete after M3.
+When you add the ML model:
+1. Keep `detection/motion_detect.c` as a *fallback* or delete it.
+2. Add `detection/fomo.c` that runs the TFLite model and returns a `Position`
+   (same struct `capture.h` already defines).
+3. In `capture/v4l2.c`, switch `find_motion_position(...)` → `find_fomo_position(...)`.
+   Nothing else changes — the angle math and PRU comms are model-agnostic.
+4. `color_threshold.c` is already gone (deleted in step 1), so no conflict.
+
+Recommended model size for the BBB (Cortex-A8, no NPU): **FOMO, 96×96,
+monochrome, quantized TFLite with NEON** → ~15–30 FPS. The PRU keeps the servo at
+a steady 50 Hz regardless of detection FPS.
 
 ---
 
-## 5. Safety (unchanged from the servo work)
+## 10. Exact delete list (do this now, safe)
 
-- Power the board **off** before changing any P8/P9 wiring (live changes can brown-out
-  the PMIC and corrupt eMMC).
-- Externally powered servos must share the board's GND or they can back-drive the 3.3 V
-  domain.
-- Only `/boot/firmware/uEnv.txt` is board-local; everything else is `git pull`.
+```
+detection/color_threshold.c
+detection/color_threshold.h
+```
+Optional later (after Milestone 5 works):
+```
+pmw/pmw_servo.c
+pmw/pmw_servo.h
+pmw/Makefile
+```
+(Keep `pmw` until the PRU swap is confirmed working, so you have a fallback.)
+
+---
+
+## 11. Quick concept checklist for interviews
+
+- **`__R30`** — PRU's direct output register; bit N drives PRU pin R30_N. No GPIO
+  driver, no device-tree needed. Fast, deterministic (200 MHz).
+- **Shared RAM mailbox** — ARM writes a struct at `0x4A310000`; PRU reads the same
+  bytes at `0x00010000`. `volatile` + a `seq` counter = lock-free handshake.
+- **`mmap("/dev/mem")`** — userspace window into physical memory; needs root.
+- **50 Hz servo** — period 20 ms; pulse 1.0–2.0 ms = 0–180°. PRU counts cycles;
+  ARM only sends the target angle.
+- **Why PRU over libgpiod** — libgpiod is a Linux userspace thread; the scheduler
+  can preempt it mid-pulse → servo buzz/jitter. The PRU is a separate real-time
+  core that never gets preempted. That's the whole reason we moved to it.
+
+---
+
+## 12. TL;DR for coding
+
+1. **Delete** `color_threshold.c/.h` (dead code).
+2. **Edit** `pru/pru_servo.c` → 2-axis, read setpoints from RAM (Milestone 2).
+3. **Create** `pru/pru_comms.c/.h` → ARM writes angles to RAM (Milestone 3).
+4. **Edit** `main.c` + `capture/v4l2.c` → use `pru_set_angle` not `servo_set_angle`
+   (Milestone 4).
+5. **Edit** top `Makefile` → drop `pmw`, add `pru_comms`, drop `-lgpiod` (Milestone 5).
+6. **Add** P9_30 mux line to `/boot/firmware/uEnv.txt` on the board.
+7. Build, load firmware, run `./turret`. Servo tracks via PRU. 🎯
