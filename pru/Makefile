@@ -9,9 +9,13 @@
 # writes, so the U-Boot mux is the only thing that sticks). See
 # PRU_SERVO_DEBUG_LOG.md and docs/TURRET_PLAN.md.
 #
-# Load/stop the firmware with the helper script:
-#   sudo bash load_pru.sh          # start (muxes + loads pru_servo.out)
-#   sudo bash load_pru.sh stop      # halt PRU0 (signal holds last level)
+# Load/stop the firmware with the helper script (NOTE: requires two args):
+#   sudo bash load_pru.sh pru0 pru_servo.out   # start (muxes + loads)
+#   sudo bash load_pru.sh stop                 # halt PRU0 (signal holds last level)
+#
+# STANDALONE SERVO ISOLATION TEST (no camera/AI) — proves firmware+ABI+wiring:
+#   gcc test_sweep.c pru_comms.c -o test_sweep && sudo ./test_sweep
+#   (If the servo sweeps here but not in the turret, your turret binary is stale.)
 # ===========================================================================
 
 PRU_INC = -I/usr/lib/ti/pru-software-support-package-v6.3/include/am335x
