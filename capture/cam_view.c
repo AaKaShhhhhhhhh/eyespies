@@ -84,7 +84,7 @@ int main(int argc, char *argv[]) {
             perror("dqbuf"); usleep(10000); continue;
         }
 
-        const unsigned char *frame = (const unsigned char *)buffers[buff.index].addr;
+        const unsigned char *frame = (const unsigned char *)buffer_addresses[buff.index];
 
         /* ---- run the SAME detector the turret uses, so we test it for real -- */
         Position pos = find_motion_position((unsigned char *)frame, W, H);

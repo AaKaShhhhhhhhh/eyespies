@@ -15,6 +15,15 @@ int open_device(const char *dev_path);
 int find_capture_device(const char *preferred);
 void query_capabilities(int fd);
 void set_format(int fd, int width, int height);
+
+/* The V4L2 mmap'd buffer pointers live in v4l2.c as file-scope globals.
+   They are declared extern here so cam_view.c (a SEPARATE translation unit,
+   compiled on its own) can read a dequeued frame's pixels the same way
+   capture_loop() does at v4l2.c:249. Without this, cam_view.c gets
+   "'buffer_addresses' undeclared" at compile time. */
+extern void *buffer_addresses[4];
+extern size_t buffer_sizes[4];
+
 int request_buffers(int fd, int count);
 void map_buffers(int fd, int index);
 void queue_all_buffers(int fd, int buffers);
