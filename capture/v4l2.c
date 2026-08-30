@@ -193,10 +193,18 @@ void save_to_file(const void *buffer, size_t size) {
 
 void capture_loop(int fd, int buffer_count, int width, int height , AxisState *pan , AxisState *tilt , void (*pru_set_angle)(pru_axis_t axis, float angle_degrees)) {
     
-    const float pan_gain = 0.08f;
-    const float tilt_gain = 0.08f;
+    /* TUNING (safe to change, reversible with: git checkout capture/v4l2.c)
+       - gain: degrees of servo move per pixel of error. 0.08 was too small,
+         the servo crept instead of tracking. 0.15 makes it visibly follow.
+       - deadband: ignore corrections smaller than this (deg). Lowered so the
+         servo keeps fine-tuning instead of stalling.
+       NOTE: the deeper "twitch" is the moving-camera + background-subtraction
+       feedback loop; that is properly fixed by switching to FOMO detection
+       (see docs/TURRET_PLAN.md), not by tuning these. */
+    const float pan_gain = 0.15f;
+    const float tilt_gain = 0.15f;
     const float smoothning = 0.5f;
-    const float deadband  = 1.0f;
+    const float deadband  = 0.5f;
     int consecutive_errors = 0;
 
     while(1) {
