@@ -5,7 +5,7 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -g -O2
 INCLUDES = -I. -I./capture -I./control -I./detection -I./pmw -I./pru
-LIBS    = -lpthread -lm -lrt -lgpiod
+LIBS    = -lpthread -lm -lrt -lgpiod -ljpeg
 
 CAPTURE_OBJS   = capture/v4l2.o
 CONTROL_OBJS   = control/control_loop.o
@@ -25,7 +25,16 @@ capture/cam_view.o: capture/cam_view.c capture/capture.h detection/motion_detect
 cam_view: capture/cam_view.o $(OBJS)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ capture/cam_view.o $(OBJS) $(LIBS)
 
-.PHONY: all turret cam_view clean
+# Live MJPEG video stream (real video in a browser, not ASCII).
+#   make mjpg_stream && ./mjpg_stream
+#   open http://<board-IP>:8080/  (needs libjpeg-dev: sudo apt-get install -y libjpeg-dev)
+capture/mjpg_stream.o: capture/mjpg_stream.c capture/capture.h detection/motion_detect.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ capture/mjpg_stream.c
+
+mjpg_stream: capture/mjpg_stream.o $(OBJS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ capture/mjpg_stream.o $(OBJS) $(LIBS)
+
+.PHONY: all turret cam_view mjpg_stream clean
 
 all: $(OBJS)
 	@echo "Objects built. Run: make turret   (to link the final binary)"
